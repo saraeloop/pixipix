@@ -12,7 +12,13 @@ from typer.testing import CliRunner
 
 import pixipix.cli as cli_module
 from pixipix.cli import app
-from tests.helpers import extraction_config, transparent_sheet, write_config, write_rgba
+from tests.helpers import (
+    extraction_config,
+    pipeline_config,
+    transparent_sheet,
+    write_config,
+    write_rgba,
+)
 
 runner = CliRunner()
 
@@ -101,6 +107,85 @@ def test_extract_success(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "extracted 2 frame(s)" in result.output
     assert (output / "stage.json").is_file()
+
+
+def test_scale_and_pixelize_help_and_success(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    write_config(config, pipeline_config())
+    extracted = tmp_path / "extracted"
+    scaled = tmp_path / "scaled"
+    pixelized = tmp_path / "pixelized"
+    assert runner.invoke(app, ["scale", "--help"]).exit_code == 0
+    assert runner.invoke(app, ["pixelize", "--help"]).exit_code == 0
+    assert (
+        runner.invoke(
+            app, ["extract", str(image), "--config", str(config), "--output", str(extracted)]
+        ).exit_code
+        == 0
+    )
+    scale_result = runner.invoke(
+        app, ["scale", str(extracted), "--config", str(config), "--output", str(scaled)]
+    )
+    pixel_result = runner.invoke(
+        app,
+        ["pixelize", str(scaled), "--config", str(config), "--output", str(pixelized)],
+    )
+    assert scale_result.exit_code == 0
+    assert "scaled 2 frame(s)" in scale_result.output
+    assert pixel_result.exit_code == 0
+    assert "pixelized 2 frame(s)" in pixel_result.output
+
+
+def test_pixelize_wrong_prior_stage_has_unsupported_exit(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    write_config(config, pipeline_config())
+    extracted = tmp_path / "extracted"
+    runner.invoke(app, ["extract", str(image), "--config", str(config), "--output", str(extracted)])
+    result = runner.invoke(
+        app,
+        [
+            "pixelize",
+            str(extracted),
+            "--config",
+            str(config),
+            "--output",
+            str(tmp_path / "pixelized"),
+        ],
+    )
+    assert result.exit_code == 3
+    assert "PX_STAGE_003" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_extreme_finite_scale_factor_is_a_processing_failure(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    write_config(
+        config,
+        pipeline_config(scale='mode = "explicit-factor"\nfactor = 1e308'),
+    )
+    extracted = tmp_path / "extracted"
+    assert (
+        runner.invoke(
+            app, ["extract", str(image), "--config", str(config), "--output", str(extracted)]
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "scale",
+            str(extracted),
+            "--config",
+            str(config),
+            "--output",
+            str(tmp_path / "scaled"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "PX_SCALE_002" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_configuration_failure_exit_code(tmp_path: Path) -> None:

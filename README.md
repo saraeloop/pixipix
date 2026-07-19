@@ -1,36 +1,28 @@
 <p align="center">
-  <img src="assets/pixipix-logo.png" alt="PixiPix logo" width="420">
+  <img src="https://raw.githubusercontent.com/saraeloop/pixipix/main/assets/pixipix-logo.png" alt="PixiPix logo" width="400">
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/pixipix/">
-    <img src="https://img.shields.io/pypi/v/pixipix" alt="PyPI">
-  </a>
-  <a href="pyproject.toml">
-    <img src="https://img.shields.io/badge/python-3.12-18181b" alt="Python 3.12">
-  </a>
-   <a href="https://github.com/saraeloop/pixipix/stargazers">
-    <img src="https://img.shields.io/github/stars/saraeloop/pixipix?style=social" alt="GitHub stars">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-Apache%202.0-64748b" alt="Apache 2.0 license">
-  </a>
+  <img src="https://img.shields.io/pypi/v/pixipix" alt="PyPI">
+  <img src="https://img.shields.io/badge/python-3.12-18181b" alt="Python 3.12">
+  <img src="https://img.shields.io/github/stars/saraeloop/pixipix?style=social" alt="GitHub stars">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-64748b" alt="Apache 2.0 license">
 </p>
 
+<p align="center">
 **Tiny poses in. Tidy pixels out.**
+</p>
 
 PixiPix is a deterministic, local-first command-line tool for extracting isolated
-visual frames from PNG source sheets. It removes a configured background, finds
-connected foreground components, applies explicit frame names, and writes cropped
-RGBA images with versioned metadata.
+visual frames from PNG source sheets, scaling them with one shared geometric ruler,
+and converting configured pseudo-pixel cells into true logical RGBA pixels.
 
 PixiPix is content-agnostic. It operates on pixels and geometry only: it does not
 recognize subjects, infer frame meaning, or assign semantic names.
 
-> [!NOTE]
-> The current release provides inspection and extraction. Scaling, pixel-grid
-> conversion, alignment, palette processing, atlas packing, and editor export are not
-> implemented yet.
+> **Note:**
+> PixiPix is in active development. APIs and output contracts may change
+> during the alpha series.
 
 ## Requirements
 
@@ -83,6 +75,18 @@ row_tolerance = 2
 
 [frames]
 names = ["frame-a", "frame-b"]
+
+[scale]
+mode = "reference-frame-width"
+reference_frame = "frame-a"
+target_size = 24
+
+[pixelize]
+source_cell_size = 6
+representative = "alpha-weighted-majority"
+alpha_policy = "binary"
+alpha_threshold = 128
+remainder_policy = "pad-transparent"
 ```
 
 Inspect the source without writing files:
@@ -97,6 +101,14 @@ Extract the configured frames:
 uv run pixipix extract source.png \
   --config pixipix.toml \
   --output build/extracted
+
+uv run pixipix scale build/extracted \
+  --config pixipix.toml \
+  --output build/scaled
+
+uv run pixipix pixelize build/scaled \
+  --config pixipix.toml \
+  --output build/pixelized
 ```
 
 The accepted component count must match both `source.expected_components` and the
@@ -130,6 +142,30 @@ pixipix extract INPUT --config CONFIG --output OUTPUT [--force]
 
 Writes one RGBA PNG per accepted component plus versioned `stage.json` metadata. The
 output is staged and validated before it is published.
+
+### `pixipix scale`
+
+```text
+pixipix scale INPUT_DIR --config CONFIG --output OUTPUT [--force]
+```
+
+Consumes a valid extraction-stage directory and applies one global scale factor to
+every frame in source pixel space. Reference modes derive the factor from one named
+frame and set its configured width or height target exactly. Optional, explicit
+per-frame multipliers are recorded and always produce warnings. Scaling uses BOX over
+float32 premultiplied RGBA channels, then deterministically un-premultiplies and
+normalizes transparent pixels to prevent dark fringes.
+
+### `pixipix pixelize`
+
+```text
+pixipix pixelize INPUT_DIR --config CONFIG --output OUTPUT [--force]
+```
+
+Consumes a valid scale-stage directory and emits one logical RGBA pixel per configured
+source cell. The grid is anchored at bottom-left: incomplete space belongs to the top
+and right edges. Output is always at 1× logical resolution and is not aligned,
+palette-locked, or packed.
 
 ### Other commands
 
@@ -226,20 +262,74 @@ controls, surrounding whitespace, trailing dots, Windows-reserved basenames, and
 overlong filenames are rejected. Filename normalization is deterministic, and
 normalized filenames must remain unique even on case-insensitive filesystems.
 
-### Optional inspection value
+### Global scale
+
+Choose exactly one scale mode:
+
+```toml
+[scale]
+mode = "explicit-factor"
+factor = 0.75
+```
+
+```toml
+[scale]
+mode = "reference-frame-width" # or reference-frame-height
+reference_frame = "frame-a"
+target_size = 24                # logical pixels
+```
+
+Reference modes use `target_size × pixelize.source_cell_size` as the exact source-space
+target. All other dimensions use the same factor with round-half-away-from-zero;
+non-empty dimensions remain at least one source pixel. A reference frame cannot have
+an override. An exceptional non-reference correction is explicit and warned:
+
+```toml
+[frame_overrides.frame-b]
+scale_multiplier = 0.96
+```
+
+PixiPix never infers or suggests per-frame normalization.
+
+### Logical pixelization
 
 ```toml
 [pixelize]
 source_cell_size = 6
+representative = "alpha-weighted-majority"
+alpha_policy = "binary"
+alpha_threshold = 128
+remainder_policy = "pad-transparent"
 ```
 
-The current release reports this configured value during inspection but does not use
-it to transform pixels.
+`source_cell_size` is required by `pixelize` and by reference scaling. Representative
+strategies are exact RGBA `majority` with first row-major tie-breaking, locked `center`
+sampling, and the default `alpha-weighted-majority`, which ignores transparent RGB and
+weights visible RGB groups by alpha. Alpha is either `binary` at the configured
+inclusive threshold or explicitly `preserve`d as the selected-color opacity.
+
+Remainder policies are `pad-transparent` (minimal top/right transparent-black padding),
+`error`, and `crop-with-warning` (top/right incomplete strips only). Cropping that would
+reduce a non-empty frame to zero dimensions is rejected.
 
 ## Output
 
 ```text
 build/extracted/
+├── .pixipix-output
+├── frames/
+│   ├── frame-a.png
+│   └── frame-b.png
+└── stage.json
+
+build/scaled/
+├── .pixipix-output
+├── frames/
+│   ├── frame-a.png
+│   └── frame-b.png
+└── stage.json
+
+build/pixelized/
 ├── .pixipix-output
 ├── frames/
 │   ├── frame-a.png
@@ -259,6 +349,11 @@ build/extracted/
 - warnings and successful status
 
 Public artifacts contain no timestamps, absolute machine paths, or temporary paths.
+Scale metadata records prior-stage identity, config hashes, the shared global factor,
+reference measurements, overrides, effective frame factors, dimensions, and warnings.
+Pixelize metadata records prior-stage identity, the bottom-left grid origin, cell size,
+selection and alpha policies, per-frame top/right padding or crop, logical dimensions,
+and warnings. Frame order always comes from `stage.json`, never directory enumeration.
 
 ## Output safety
 
@@ -290,6 +385,13 @@ paths, and exactly one trailing newline. PNG output is RGBA, excludes source met
 uses explicit compression settings, and zeroes RGB channels for fully transparent
 pixels.
 
+Geometric and channel quantization use separate round-half-away-from-zero helpers.
+Scale BOX filtering operates on float32 premultiplied red, green, blue, and alpha
+channels; un-premultiplication occurs in float64 and channels are quantized once.
+Fully opaque input uses the equivalent native RGBA BOX path for ordinary BOX identity.
+Pixel representatives use fixed row-major tie rules. Sequential `scale` then `pixelize`
+is the canonical path; no fused implementation exists.
+
 ## Exit codes
 
 | Code | Meaning                        |
@@ -305,15 +407,19 @@ Expected domain failures do not print tracebacks.
 ## Current limitations
 
 - one PNG source sheet per command
-- strict extraction only
+- strict configuration and one shared scale factor per extracted sheet
 - component filtering by minimum and optional maximum area
-- no scaling, pixel-grid conversion, alignment, palette processing, recoloring, packing,
-  final manifest/report, animation generation, or editor integration
+- explicit source-cell size; no source-cell inference or automatic frame normalization
+- no fixed-canvas alignment, anchors, baseline placement, clipping, palette processing,
+  recoloring, atlas packing, final manifest/report, animation generation, or editor
+  integration
 - no end-to-end `build` command yet
 
 ## Development
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for architecture, fixture provenance, and the full
-verification workflow.
+See
+[DEVELOPMENT.md](https://github.com/saraeloop/pixipix/blob/main/DEVELOPMENT.md)
+for architecture, fixture provenance, and the full verification workflow.
 
-PixiPix is licensed under the [Apache License 2.0](LICENSE).
+PixiPix is licensed under the
+[Apache License 2.0](https://github.com/saraeloop/pixipix/blob/main/LICENSE).

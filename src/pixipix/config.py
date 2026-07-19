@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import tomllib
 import unicodedata
@@ -15,6 +16,10 @@ from pixipix.serialization import canonical_json_bytes
 
 type RgbaColor = str
 type BackgroundMode = Literal["alpha", "corner-color", "explicit-color"]
+type ScaleMode = Literal["explicit-factor", "reference-frame-width", "reference-frame-height"]
+type RepresentativeStrategy = Literal["majority", "center", "alpha-weighted-majority"]
+type AlphaPolicy = Literal["binary", "preserve"]
+type RemainderPolicy = Literal["pad-transparent", "error", "crop-with-warning"]
 
 MAX_SOURCE_PIXELS = 16_777_216
 MAX_FRAME_FILENAME_BYTES = 120
@@ -70,8 +75,26 @@ class FramesConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class PixelizeInspectionConfig:
+class ScaleConfig:
+    mode: ScaleMode
+    factor: float | None = None
+    reference_frame: str | None = None
+    target_size: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FrameScaleOverride:
+    frame_name: str
+    scale_multiplier: float
+
+
+@dataclass(frozen=True, slots=True)
+class PixelizeConfig:
     source_cell_size: int | None = None
+    representative: RepresentativeStrategy = "alpha-weighted-majority"
+    alpha_policy: AlphaPolicy = "binary"
+    alpha_threshold: int = 128
+    remainder_policy: RemainderPolicy = "pad-transparent"
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +104,9 @@ class PixiPixConfig:
     background: BackgroundConfig
     extract: ExtractConfig
     frames: FramesConfig
-    pixelize: PixelizeInspectionConfig
+    scale: ScaleConfig | None
+    frame_overrides: tuple[FrameScaleOverride, ...]
+    pixelize: PixelizeConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +168,16 @@ def _string(table: dict[str, object], key: str, default: str | None) -> str | No
     if not isinstance(value, str) or not value.strip():
         raise ConfigurationError("PX_CONFIG_007", f'"{key}" must be a non-empty string')
     return value.strip()
+
+
+def _positive_finite(table: dict[str, object], key: str) -> float:
+    value = table.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigurationError("PX_CONFIG_024", f'"{key}" must be numeric')
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ConfigurationError("PX_CONFIG_024", f'"{key}" must be finite and greater than zero')
+    return number
 
 
 def _parse_color(value: object) -> tuple[RgbaColor, bool]:
@@ -324,11 +359,121 @@ def _parse_frames(root: dict[str, object]) -> FramesConfig:
     return FramesConfig(names=names, filenames=filenames)
 
 
-def _parse_pixelize(root: dict[str, object]) -> PixelizeInspectionConfig:
+def _parse_scale(root: dict[str, object], frames: FramesConfig) -> ScaleConfig | None:
+    raw = root.get("scale")
+    if raw is None:
+        return None
+    table = _table(raw, "scale")
+    _reject_unknown(table, {"mode", "factor", "reference_frame", "target_size"}, "scale")
+    mode = _string(table, "mode", None)
+    if mode not in {"explicit-factor", "reference-frame-width", "reference-frame-height"}:
+        raise ConfigurationError("PX_CONFIG_025", f'unsupported scale mode "{mode}"')
+    factor_present = "factor" in table
+    reference_present = "reference_frame" in table
+    target_present = "target_size" in table
+    if mode == "explicit-factor":
+        if not factor_present:
+            raise ConfigurationError(
+                "PX_CONFIG_026", 'explicit-factor mode requires "scale.factor"'
+            )
+        if reference_present or target_present:
+            raise ConfigurationError(
+                "PX_CONFIG_026",
+                'explicit-factor mode forbids "scale.reference_frame" and "scale.target_size"',
+            )
+        return ScaleConfig(mode="explicit-factor", factor=_positive_finite(table, "factor"))
+    if factor_present:
+        raise ConfigurationError("PX_CONFIG_026", 'reference scale modes forbid "scale.factor"')
+    reference = _string(table, "reference_frame", None)
+    if reference is None or not target_present:
+        raise ConfigurationError(
+            "PX_CONFIG_026",
+            'reference scale modes require "scale.reference_frame" and "scale.target_size"',
+        )
+    if reference not in frames.names:
+        available = ", ".join(frames.names)
+        raise ConfigurationError(
+            "PX_CONFIG_027",
+            f'scale reference frame "{reference}" is not configured',
+            remediation=f"choose one of: {available}",
+        )
+    target = cast(int, _integer(table, "target_size", None, minimum=1))
+    return ScaleConfig(mode=cast(ScaleMode, mode), reference_frame=reference, target_size=target)
+
+
+def _parse_frame_overrides(
+    root: dict[str, object], frames: FramesConfig, scale: ScaleConfig | None
+) -> tuple[FrameScaleOverride, ...]:
+    root_table = _table(root.get("frame_overrides", {}), "frame_overrides")
+    unknown_frames = sorted(set(root_table) - set(frames.names))
+    if unknown_frames:
+        raise ConfigurationError(
+            "PX_CONFIG_028",
+            f'frame override names unknown frame "{unknown_frames[0]}"',
+        )
+    overrides: list[FrameScaleOverride] = []
+    for frame_name in frames.names:
+        if frame_name not in root_table:
+            continue
+        table = _table(root_table[frame_name], f"frame_overrides.{frame_name}")
+        _reject_unknown(table, {"scale_multiplier"}, f"frame_overrides.{frame_name}")
+        if "scale_multiplier" not in table:
+            raise ConfigurationError(
+                "PX_CONFIG_029",
+                f'frame override "{frame_name}" requires "scale_multiplier"',
+            )
+        if scale is not None and frame_name == scale.reference_frame:
+            raise ConfigurationError(
+                "PX_CONFIG_030",
+                f'scale reference frame "{frame_name}" cannot declare a scale override',
+                remediation=(
+                    f"remove frame_overrides.{frame_name}.scale_multiplier or choose "
+                    "another reference frame"
+                ),
+            )
+        overrides.append(
+            FrameScaleOverride(
+                frame_name=frame_name,
+                scale_multiplier=_positive_finite(table, "scale_multiplier"),
+            )
+        )
+    return tuple(overrides)
+
+
+def _parse_pixelize(root: dict[str, object]) -> PixelizeConfig:
     table = _table(root.get("pixelize", {}), "pixelize")
-    _reject_unknown(table, {"source_cell_size"}, "pixelize")
-    return PixelizeInspectionConfig(
-        source_cell_size=_integer(table, "source_cell_size", None, minimum=1)
+    _reject_unknown(
+        table,
+        {
+            "source_cell_size",
+            "representative",
+            "alpha_policy",
+            "alpha_threshold",
+            "remainder_policy",
+        },
+        "pixelize",
+    )
+    representative = _string(table, "representative", "alpha-weighted-majority")
+    if representative not in {"majority", "center", "alpha-weighted-majority"}:
+        raise ConfigurationError(
+            "PX_CONFIG_031", f'unsupported pixelize representative "{representative}"'
+        )
+    alpha_policy = _string(table, "alpha_policy", "binary")
+    if alpha_policy not in {"binary", "preserve"}:
+        raise ConfigurationError(
+            "PX_CONFIG_032", f'unsupported pixelize alpha policy "{alpha_policy}"'
+        )
+    remainder_policy = _string(table, "remainder_policy", "pad-transparent")
+    if remainder_policy not in {"pad-transparent", "error", "crop-with-warning"}:
+        raise ConfigurationError(
+            "PX_CONFIG_033", f'unsupported pixelize remainder policy "{remainder_policy}"'
+        )
+    return PixelizeConfig(
+        source_cell_size=_integer(table, "source_cell_size", None, minimum=1),
+        representative=cast(RepresentativeStrategy, representative),
+        alpha_policy=cast(AlphaPolicy, alpha_policy),
+        alpha_threshold=cast(int, _integer(table, "alpha_threshold", 128, minimum=0, maximum=255)),
+        remainder_policy=cast(RemainderPolicy, remainder_policy),
     )
 
 
@@ -346,14 +491,37 @@ def load_config(path: Path) -> LoadedConfig:
             "PX_CONFIG_001", f"invalid TOML configuration: {error}", path=path.name
         ) from error
     root = _table(raw, "root")
-    _reject_unknown(root, {"project", "source", "background", "extract", "frames", "pixelize"}, "")
+    _reject_unknown(
+        root,
+        {
+            "project",
+            "source",
+            "background",
+            "extract",
+            "frames",
+            "scale",
+            "frame_overrides",
+            "pixelize",
+        },
+        "",
+    )
+    frames = _parse_frames(root)
+    scale = _parse_scale(root, frames)
+    pixelize = _parse_pixelize(root)
+    if scale is not None and scale.mode != "explicit-factor" and pixelize.source_cell_size is None:
+        raise ConfigurationError(
+            "PX_CONFIG_034",
+            'reference scale modes require "pixelize.source_cell_size"',
+        )
     config = PixiPixConfig(
         project=_parse_project(root),
         source=_parse_source(root),
         background=_parse_background(root),
         extract=_parse_extract(root),
-        frames=_parse_frames(root),
-        pixelize=_parse_pixelize(root),
+        frames=frames,
+        scale=scale,
+        frame_overrides=_parse_frame_overrides(root, frames, scale),
+        pixelize=pixelize,
     )
     expected = config.source.expected_components
     if expected is not None and expected != len(config.frames.names):

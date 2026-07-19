@@ -151,4 +151,89 @@ class StageMetadata:
 class OutputMarker:
     schema_version: int
     owner: Literal["pixipix"]
-    stage: Literal["extract"]
+    stage: Literal["extract", "scale", "pixelize"]
+
+
+@dataclass(frozen=True, slots=True)
+class Dimensions:
+    width: int
+    height: int
+
+
+@dataclass(frozen=True, slots=True)
+class PriorStageIdentity:
+    stage: Literal["extract", "scale"]
+    schema_version: int
+    pixipix_version: str
+    effective_config_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScaleFrame:
+    name: str
+    relative_path: PurePosixPath
+    source_order: int
+    input_dimensions: Dimensions
+    output_dimensions: Dimensions
+    scale_multiplier: float
+    effective_factor: float
+
+
+@dataclass(frozen=True, slots=True)
+class ScaleOverrideMetadata:
+    frame_name: str
+    scale_multiplier: float
+
+
+@dataclass(frozen=True, slots=True)
+class ScaleStageMetadata:
+    schema_version: int
+    pixipix_version: str
+    stage: Literal["scale"]
+    status: Literal["successful"]
+    prior_stage: PriorStageIdentity
+    source_config_sha256: str
+    effective_config_sha256: str
+    scale_mode: Literal["explicit-factor", "reference-frame-width", "reference-frame-height"]
+    global_factor: float
+    reference_frame: str | None
+    source_reference_measurement: int | None
+    exact_target_source_measurement: int | None
+    logical_target_size: int | None
+    source_cell_size: int | None
+    configured_frame_overrides: tuple[ScaleOverrideMetadata, ...]
+    frames: tuple[ScaleFrame, ...]
+    warnings: tuple[ProcessingWarning, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PixelizeFrame:
+    name: str
+    relative_path: PurePosixPath
+    source_order: int
+    input_dimensions: Dimensions
+    prepared_dimensions: Dimensions
+    top_padding: int
+    right_padding: int
+    top_crop: int
+    right_crop: int
+    logical_output_dimensions: Dimensions
+
+
+@dataclass(frozen=True, slots=True)
+class PixelizeStageMetadata:
+    schema_version: int
+    pixipix_version: str
+    stage: Literal["pixelize"]
+    status: Literal["successful"]
+    prior_stage: PriorStageIdentity
+    source_config_sha256: str
+    effective_config_sha256: str
+    source_cell_size: int
+    cell_grid_origin: Literal["bottom-left"]
+    representative: Literal["majority", "center", "alpha-weighted-majority"]
+    alpha_policy: Literal["binary", "preserve"]
+    alpha_threshold: int
+    remainder_policy: Literal["pad-transparent", "error", "crop-with-warning"]
+    frames: tuple[PixelizeFrame, ...]
+    warnings: tuple[ProcessingWarning, ...]
