@@ -1,0 +1,101 @@
+name: Feature request
+description: Propose a focused improvement to a PixiPix workflow
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement. PixiPix favors deterministic, local-first behavior and explicit configuration over inference. Describe the problem before prescribing an implementation.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I searched existing issues and did not find this request.
+          required: true
+        - label: This request describes one focused problem or workflow.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is difficult or impossible today, and who encounters it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the observable behavior or result you want without assuming a particular implementation.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Workflow area
+      options:
+        - CLI and user experience
+        - Configuration
+        - PNG inspection
+        - Component extraction
+        - Scaling or pixel-grid conversion
+        - Alignment or framing
+        - Palette processing
+        - Atlas packing or editor export
+        - Packaging, documentation, or contributor tooling
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example workflow
+      description: Show a small input, command or configuration, and expected output when practical. Use only redistributable examples.
+      placeholder: |
+        Given ...
+        When ...
+        Then ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: determinism
+    attributes:
+      label: Determinism, safety, and compatibility
+      description: Explain how repeated runs should behave and identify any filesystem, output-format, performance, or backward-compatibility constraints.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe current workarounds or other approaches and why they are insufficient.
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List concrete results that would demonstrate the request is complete.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to help implement or test this request.
+          required: false
