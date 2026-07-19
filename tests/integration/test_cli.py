@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import NoReturn
 
@@ -40,7 +41,7 @@ def test_help_and_version_commands() -> None:
     assert module_equivalent.exit_code == 0
     assert "Tiny poses in. Tidy pixels out." in module_equivalent.output
     assert version_result.exit_code == 0
-    assert version_result.output == "PixiPix 0.1.0\n"
+    assert version_result.output == f"PixiPix {distribution_version('pixipix')}\n"
 
 
 def test_actual_console_and_module_entry_points_agree() -> None:
@@ -57,7 +58,7 @@ def test_actual_console_and_module_entry_points_agree() -> None:
     assert console.returncode == module.returncode == version.returncode == 0
     assert "Tiny poses in. Tidy pixels out." in console.stdout
     assert "Tiny poses in. Tidy pixels out." in module.stdout
-    assert version.stdout == "PixiPix 0.1.0\n"
+    assert version.stdout == f"PixiPix {distribution_version('pixipix')}\n"
     assert console.stderr == module.stderr == version.stderr == ""
 
 
