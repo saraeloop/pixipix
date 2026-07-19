@@ -1,6 +1,6 @@
 [project]
 name = "pixipix"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Extract, grid-snap, and palette-lock pose-sheet artwork into real pixel sprite assets."
 readme = "README.md"
 license = { file = "LICENSE" }
