@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 
 import numpy as np
@@ -57,7 +58,7 @@ def test_extract_writes_component_only_rgba_frames_and_metadata(tmp_path: Path) 
     assert (output / ".pixipix-output").is_file()
     metadata = json.loads((output / "stage.json").read_text(encoding="utf-8"))
     assert metadata["schemaVersion"] == 1
-    assert metadata["pixipixVersion"] == "0.1.0"
+    assert metadata["pixipixVersion"] == distribution_version("pixipix")
     assert metadata["stage"] == "extract"
     assert metadata["status"] == "successful"
     assert [frame["name"] for frame in metadata["frames"]] == ["idle", "signal"]
