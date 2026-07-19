@@ -3,15 +3,13 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/pypi/v/pixipix" alt="PyPI">
+  <img src="https://img.shields.io/pypi/v/pixipix.svg" alt="PyPI version">
   <img src="https://img.shields.io/badge/python-3.12-18181b" alt="Python 3.12">
   <img src="https://img.shields.io/github/stars/saraeloop/pixipix?style=social" alt="GitHub stars">
   <img src="https://img.shields.io/badge/license-Apache%202.0-64748b" alt="Apache 2.0 license">
 </p>
 
-<p align="center">
-**Tiny poses in. Tidy pixels out.**
-</p>
+<p align="center"><strong>Tiny poses in. Tidy pixels out.</strong></p>
 
 PixiPix is a deterministic, local-first command-line tool for extracting isolated
 visual frames from PNG source sheets, scaling them with one shared geometric ruler,
