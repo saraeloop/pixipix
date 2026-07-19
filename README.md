@@ -1,5 +1,9 @@
 # PixiPix
 
+<p align="center">
+  <img src="assets/pixipix-logo.png" alt="PixiPix logo" width="720">
+</p>
+
 **Tiny poses in. Tidy pixels out.**
 
 PixiPix is a deterministic, local-first command-line tool for extracting isolated
