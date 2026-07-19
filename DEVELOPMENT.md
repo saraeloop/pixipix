@@ -70,6 +70,68 @@ Implementation work should be reviewed after tests, adversarial diff inspection,
 clear `git status --short`. Do not commit, push, or publish a pull request until the
 working tree has been explicitly approved.
 
+## PyPI release automation
+
+The release workflow is `.github/workflows/publish.yml`. Pull requests and manual
+`workflow_dispatch` runs execute the complete locked quality gates, build and inspect one
+wheel plus one source distribution, smoke-test each distribution in isolation, compare the
+direct wheel byte-for-byte with a wheel rebuilt from the sdist, and retain the verified files
+in the `python-package-distributions` workflow artifact for 14 days. These runs never receive
+an OIDC publishing token and never publish.
+
+Production publishing is restricted to `v*` tag pushes. The publishing job depends on the
+successful build job, downloads that run's immutable artifact, verifies that it contains
+exactly one wheel and one sdist, and uploads those files without rebuilding. The tag after
+removing exactly one leading `v` must equal the version committed in `pyproject.toml`.
+
+The pending PyPI Trusted Publisher must retain these exact values:
+
+```text
+PyPI project: pixipix
+GitHub owner: saraeloop
+Repository: pixipix
+Workflow filename: publish.yml
+Environment: pypi
+```
+
+Create the GitHub environment manually with the exact name `pypi`. Restrict deployment to
+selected release tags using the recommended `v*` pattern. For a public repository and an
+account plan that supports it, a required reviewer is also recommended when that operational
+approval is useful. Repository configuration cannot prove these settings; inspect them in
+GitHub before the first tag is created.
+
+Trusted Publishing exchanges GitHub's short-lived OIDC identity for PyPI authorization. Do
+not add a PyPI username, password, API token, repository secret, or environment secret. Only
+the publishing job has `id-token: write`; the build job remains read-only. PyPI releases are
+immutable, and the workflow deliberately fails if the version already exists.
+
+The current `0.1.0` version is not changed by the workflow milestone. Prepare the foundation
+milestone later as an alpha release, likely `0.1.0a1`, in a separate version-only release
+preparation change. A matching tag would then be `v0.1.0a1`; validate the workflow on a pull
+request before creating any release tag.
+
+Local verification equivalent to the release build is:
+
+```bash
+uv sync --locked --all-groups
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+uv run pytest
+uv build --wheel --no-sources --out-dir dist
+uv build --sdist --no-sources --out-dir dist
+uv run python scripts/release.py inspect-dist --dist-dir dist
+uv build --wheel --no-sources --out-dir /tmp/pixipix-wheel-from-sdist dist/*.tar.gz
+uv run python scripts/release.py compare-wheels \
+  --direct-dir dist --rebuilt-dir /tmp/pixipix-wheel-from-sdist
+uv run --isolated --no-project --with dist/*.whl scripts/smoke_distribution.py
+uv run --isolated --no-project --with dist/*.tar.gz scripts/smoke_distribution.py
+```
+
+After a pull-request or manual run, open the workflow run's **Artifacts** section and download
+`python-package-distributions`. Inspect the retained wheel and sdist; do not use an artifact
+from a failed or unrelated run for release preparation.
+
 ## Publication safety boundary
 
 Publication rejects direct symlink targets, untrusted symlink parents, dangerous roots,
