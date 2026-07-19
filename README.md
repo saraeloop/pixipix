@@ -1,8 +1,11 @@
-# PixiPix
-
 <p align="center">
-  <img src="assets/pixipix-logo.png" alt="PixiPix logo" width="720">
+  <img src="assets/pixipix-logo.png" alt="PixiPix logo" width="480">
 </p>
+
+[![PyPI](https://img.shields.io/pypi/v/pixipix)](https://pypi.org/project/pixipix/)
+[![Python](https://img.shields.io/badge/python-3.12-18181b)](pyproject.toml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-64748b)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/saraeloop/pixipix?style=social)](https://github.com/saraeloop/pixipix/stargazers)
 
 **Tiny poses in. Tidy pixels out.**
 
@@ -279,13 +282,13 @@ pixels.
 
 ## Exit codes
 
-| Code | Meaning |
-| ---: | --- |
-| `0` | Success |
-| `1` | Processing or output failure |
-| `2` | Configuration failure |
-| `3` | Unsupported or malformed input |
-| `4` | Unexpected internal error |
+| Code | Meaning                        |
+| ---: | ------------------------------ |
+|  `0` | Success                        |
+|  `1` | Processing or output failure   |
+|  `2` | Configuration failure          |
+|  `3` | Unsupported or malformed input |
+|  `4` | Unexpected internal error      |
 
 Expected domain failures do not print tracebacks.
 
