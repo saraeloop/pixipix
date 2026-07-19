@@ -1,0 +1,145 @@
+name: Bug report
+description: Report reproducible incorrect or unexpected PixiPix behavior
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve PixiPix. Please provide a minimal, reproducible report.
+
+        Do not include credentials, private artwork, proprietary inputs, personal information, or vulnerability details. Report security issues through [GitHub private vulnerability reporting](https://github.com/saraeloop/pixipix/security/advisories/new).
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I searched the existing issues and did not find this problem.
+          required: true
+        - label: I can share the information in this report publicly and have removed sensitive data.
+          required: true
+
+  - type: input
+    id: pixipix-version
+    attributes:
+      label: PixiPix version
+      description: Run `pixipix version` and paste the complete output.
+      placeholder: PixiPix X.Y.Z
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - PyPI
+        - Source checkout with uv
+        - Locally built wheel or source distribution
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Run `python --version` or `uv run python --version`.
+      placeholder: Python 3.12.9
+    validations:
+      required: true
+
+  - type: input
+    id: operating-system
+    attributes:
+      label: Operating system
+      description: Include the OS version and CPU architecture.
+      placeholder: macOS 15 arm64, Ubuntu 24.04 x86_64, or Windows 11 x86_64
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Paste the exact command that demonstrates the problem.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Minimal configuration
+      description: Paste the smallest sanitized `pixipix.toml` that reproduces the problem.
+      render: toml
+    validations:
+      required: false
+
+  - type: textarea
+    id: input-description
+    attributes:
+      label: Input description
+      description: Describe the PNG dimensions, color mode, transparency or background, component count, and any relevant synthetic fixture details. Attach only files you may share publicly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide a minimal, ordered sequence that starts from a clean directory when practical.
+      placeholder: |
+        1. Create ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe the result you expected, including relevant files, exit codes, or output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe what happened instead, including relevant files, exit codes, or output.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Reproduction frequency
+      options:
+        - Always
+        - Often
+        - Sometimes
+        - Once
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostic output
+      description: Paste the complete terminal output or traceback, after removing sensitive or machine-private values.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add anything else that may help isolate the cause, such as whether repeated runs are byte-identical.
+    validations:
+      required: false

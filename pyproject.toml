@@ -1,7 +1,7 @@
 [project]
 name = "pixipix"
 version = "0.1.0a1"
-description = "Deterministic extraction foundations for sprite artwork"
+description = "Extract, grid-snap, and palette-lock pose-sheet artwork into real pixel sprite assets."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12,<3.13"
