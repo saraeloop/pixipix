@@ -1,11 +1,21 @@
 <p align="center">
-  <img src="assets/pixipix-logo.png" alt="PixiPix logo" width="480">
+  <img src="assets/pixipix-logo.png" alt="PixiPix logo" width="420">
 </p>
 
-[![PyPI](https://img.shields.io/pypi/v/pixipix)](https://pypi.org/project/pixipix/)
-[![Python](https://img.shields.io/badge/python-3.12-18181b)](pyproject.toml)
-[![License](https://img.shields.io/badge/license-Apache%202.0-64748b)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/saraeloop/pixipix?style=social)](https://github.com/saraeloop/pixipix/stargazers)
+<p align="center">
+  <a href="https://pypi.org/project/pixipix/">
+    <img src="https://img.shields.io/pypi/v/pixipix" alt="PyPI">
+  </a>
+  <a href="pyproject.toml">
+    <img src="https://img.shields.io/badge/python-3.12-18181b" alt="Python 3.12">
+  </a>
+   <a href="https://github.com/saraeloop/pixipix/stargazers">
+    <img src="https://img.shields.io/github/stars/saraeloop/pixipix?style=social" alt="GitHub stars">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache%202.0-64748b" alt="Apache 2.0 license">
+  </a>
+</p>
 
 **Tiny poses in. Tidy pixels out.**
 
