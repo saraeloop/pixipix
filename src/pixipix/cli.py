@@ -13,6 +13,8 @@ from pixipix.config import load_config
 from pixipix.errors import ExitCode, PixiPixError
 from pixipix.models import Component, InspectionResult
 from pixipix.stages.extract import inspect_source, publish_extraction
+from pixipix.stages.pixelize import publish_pixelize
+from pixipix.stages.scale import publish_scale
 
 app = typer.Typer(
     name="pixipix",
@@ -144,6 +146,39 @@ def extract_command(
         lambda: publish_extraction(input_path, load_config(config_path), output, force=force)
     )
     typer.echo(f"extracted {len(result.frames)} frame(s) to {output}")
+
+
+@app.command("scale")
+def scale_command(
+    input_dir: Annotated[Path, typer.Argument(exists=False, file_okay=False, metavar="INPUT_DIR")],
+    config_path: Annotated[Path, typer.Option("--config", dir_okay=False, metavar="CONFIG")],
+    output: Annotated[Path, typer.Option("--output", file_okay=False, metavar="OUTPUT")],
+    force: Annotated[
+        bool, typer.Option("--force", help="Replace only verified PixiPix-owned scale output.")
+    ] = False,
+) -> None:
+    """Apply one deterministic global source-space scale transform."""
+
+    result = _call(lambda: publish_scale(input_dir, load_config(config_path), output, force=force))
+    typer.echo(f"scaled {len(result.frames)} frame(s) to {output}")
+
+
+@app.command("pixelize")
+def pixelize_command(
+    input_dir: Annotated[Path, typer.Argument(exists=False, file_okay=False, metavar="INPUT_DIR")],
+    config_path: Annotated[Path, typer.Option("--config", dir_okay=False, metavar="CONFIG")],
+    output: Annotated[Path, typer.Option("--output", file_okay=False, metavar="OUTPUT")],
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Replace only verified PixiPix-owned pixelize output."),
+    ] = False,
+) -> None:
+    """Convert configured source cells into true logical RGBA pixels."""
+
+    result = _call(
+        lambda: publish_pixelize(input_dir, load_config(config_path), output, force=force)
+    )
+    typer.echo(f"pixelized {len(result.frames)} frame(s) to {output}")
 
 
 def main() -> None:

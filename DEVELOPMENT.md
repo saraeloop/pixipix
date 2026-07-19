@@ -36,9 +36,10 @@ absolute paths.
 
 ```text
 Typer CLI adapter
-  -> strict TOML config + extraction use cases
+  -> inspect / extract / scale / pixelize stage orchestration
       -> typed domain models + deterministic stage functions
-          -> centralized Pillow/NumPy codec boundary + filesystem publication
+          -> image, metadata, serialization, handoff, and filesystem helpers
+              -> Pillow / NumPy / standard library
 ```
 
 `cli.py` only parses, invokes, renders, and maps errors. `config.py` owns semantic
@@ -48,6 +49,34 @@ mutable image buffers have explicit ownership and never enter frozen metadata.
 ordering, frame creation, extraction metadata, and safe publication. `serialization.py`
 is the only deterministic JSON writer.
 
+`stages/scale.py` owns geometric and channel rounding, sheet-level factor calculation,
+premultiplied-alpha BOX resampling, exact reference targets, override warnings, and
+scale metadata. Geometry and channel rounding are deliberately separate helpers.
+Premultiplication uses unquantized float32 channels, Pillow `F`-mode BOX is the single
+resampling pass, un-premultiplication uses float64, and final channels are quantized
+half-away-from-zero once. Fully opaque input uses the mathematically equivalent native
+RGBA BOX path so it remains byte-equivalent to ordinary BOX output. Transparent output
+RGB is always normalized to zero.
+
+`stages/pixelize.py` owns bottom-left cell-grid preparation, top/right remainder
+handling, representative selection, alpha policy, and logical-space metadata. Padding
+is added only above and to the right; cropping removes only those edges. The logical
+array retains conventional top-left row storage while its partition contract is
+explicitly bottom-left anchored.
+
+`stages/io.py` owns strict prior-stage validation and the generic atomic publication
+path used by scale and pixelize. It validates ownership and schema markers, frame order,
+unique names and safe relative paths, RGBA mode, declared dimensions, optional declared
+hashes, and exact frame-directory contents. Publication builds in a temporary sibling,
+validates the complete payload, atomically replaces verified same-stage output under
+`--force`, and restores the prior output after rename failure where possible.
+
+Stage metadata is the process boundary. `scale` consumes successful schema-1 `extract`
+metadata; `pixelize` consumes successful schema-1 `scale` metadata. Both preserve
+metadata frame order and record a typed prior-stage identity. Current extraction
+metadata does not declare artifact hashes, so new stages validate hashes when present
+but do not invent a second hash policy.
+
 Expected domain errors are rendered without tracebacks. This milestone has no public
 debug flag; unexpected failures return exit code 4 with internal details suppressed.
 
@@ -55,6 +84,14 @@ When adding a stage, keep source-pixel and logical-pixel coordinates explicit, a
 typed input plus validated immutable configuration, return typed results, centralize
 serialization, and make stage order recoverable from versioned metadata rather than
 filesystem enumeration. Do not create empty future-stage modules.
+
+Algorithm-focused tests live in `tests/unit/test_scale.py` and
+`tests/unit/test_pixelize.py`. Configuration matrices live in
+`tests/unit/test_pipeline_config.py`; stage handoff, atomic publication, CLI workflow,
+and separate-process determinism are exercised under `tests/integration/`. Run targeted
+tests while iterating, then the complete quality gate above. Distribution verification
+must also install the built wheel into an isolated environment and exercise
+`extract -> scale -> pixelize` through the installed console script.
 
 ## Fixtures and provenance
 

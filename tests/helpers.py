@@ -61,3 +61,28 @@ def extraction_config(
 
 def write_config(path: Path, content: str | None = None) -> None:
     path.write_text(content or extraction_config(), encoding="utf-8")
+
+
+def pipeline_config(
+    *,
+    names: tuple[str, ...] = ("idle", "signal"),
+    scale: str = 'mode = "explicit-factor"\nfactor = 1.0',
+    pixelize: str = (
+        "source_cell_size = 2\n"
+        'representative = "alpha-weighted-majority"\n'
+        'alpha_policy = "binary"\n'
+        "alpha_threshold = 128\n"
+        'remainder_policy = "pad-transparent"'
+    ),
+    overrides: str = "",
+    padding: int = 0,
+) -> str:
+    return (
+        extraction_config(names=names, expected=len(names), padding=padding)
+        + "\n[scale]\n"
+        + scale
+        + "\n\n[pixelize]\n"
+        + pixelize
+        + ("\n\n" + overrides if overrides else "")
+        + "\n"
+    )

@@ -39,7 +39,7 @@ def test_valid_extraction_config_and_hashes(tmp_path: Path) -> None:
         (extraction_config(names=("one",), expected=2), "PX_CONFIG_021"),
         (extraction_config(names=("../escape", "safe")), "PX_CONFIG_020"),
         (extraction_config().replace("[source]", '[source]\nformat = "jpeg"'), "PX_CONFIG_009"),
-        (extraction_config() + '\n[scale]\nmode = "explicit-factor"\n', "PX_CONFIG_003"),
+        (extraction_config() + '\n[align]\nanchor = "bottom-left"\n', "PX_CONFIG_003"),
         (extraction_config().replace("strict = true", "strict = false"), "PX_CONFIG_022"),
         (
             extraction_config().replace(
