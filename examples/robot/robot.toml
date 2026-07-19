@@ -1,0 +1,19 @@
+[project]
+name = "synthetic-robot"
+strict = true
+
+[source]
+expected_components = 2
+
+[background]
+mode = "alpha"
+alpha_threshold = 8
+
+[extract]
+connectivity = 8
+minimum_area = 4
+padding = 1
+row_tolerance = 2
+
+[frames]
+names = ["idle", "signal"]

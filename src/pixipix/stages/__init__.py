@@ -1,0 +1,1 @@
+"""Concrete PixiPix processing stages."""

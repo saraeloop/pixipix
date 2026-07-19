@@ -1,0 +1,325 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from pixipix.config import load_config
+from pixipix.errors import ProcessingError
+from pixipix.models import StageMetadata
+from pixipix.stages import extract as extract_stage
+from pixipix.stages.extract import inspect_source, publish_extraction
+from tests.helpers import extraction_config, transparent_sheet, write_config, write_rgba
+
+
+def _project(tmp_path: Path) -> tuple[Path, Path]:
+    image = tmp_path / "robot.png"
+    config = tmp_path / "robot.toml"
+    write_rgba(image, transparent_sheet())
+    write_config(config)
+    return image, config
+
+
+def _artifact_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_inspection_is_typed_and_does_not_write_artifacts(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+
+    result = inspect_source(image, load_config(config))
+
+    assert result.source.width == 14
+    assert len(result.candidates) == 3
+    assert len(result.accepted) == 2
+    assert len(result.rejected) == 1
+    assert result.frame_assignments == ("idle", "signal")
+    assert result.configured_source_cell_size is None
+    assert not (tmp_path / "stage.json").exists()
+
+
+def test_extract_writes_component_only_rgba_frames_and_metadata(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "output"
+
+    result = publish_extraction(image, load_config(config), output)
+
+    assert [frame.name for frame in result.frames] == ["idle", "signal"]
+    assert (output / ".pixipix-output").is_file()
+    metadata = json.loads((output / "stage.json").read_text(encoding="utf-8"))
+    assert metadata["schemaVersion"] == 1
+    assert metadata["pixipixVersion"] == "0.1.0"
+    assert metadata["stage"] == "extract"
+    assert metadata["status"] == "successful"
+    assert [frame["name"] for frame in metadata["frames"]] == ["idle", "signal"]
+    assert len(metadata["candidateComponents"]) == 3
+    assert len(metadata["acceptedComponents"]) == 2
+    assert metadata["orderedComponents"] == [
+        metadata["acceptedComponents"][0],
+        metadata["acceptedComponents"][1],
+    ]
+    assert metadata["rejectedComponents"][0]["reasons"] == ["below-minimum-area"]
+    rendered = (output / "stage.json").read_text(encoding="utf-8")
+    assert str(tmp_path) not in rendered
+    assert "timestamp" not in rendered.lower()
+
+    with Image.open(output / "frames" / "idle.png") as first:
+        first_pixels = np.asarray(first.convert("RGBA"))
+        assert first.mode == "RGBA"
+    assert first_pixels.shape == (5, 5, 4)
+    assert first_pixels[0, 0].tolist() == [0, 0, 0, 0]
+    assert np.count_nonzero(first_pixels[:, :, 3]) == 9
+
+    with Image.open(output / "frames" / "signal.png") as second:
+        second_pixels = np.asarray(second.convert("RGBA"))
+    assert set(np.unique(second_pixels[:, :, 3]).tolist()) == {0, 200}
+
+    frame_paths = {frame["relativePath"] for frame in metadata["frames"]}
+    assert frame_paths == {
+        path.relative_to(output).as_posix() for path in (output / "frames").glob("*.png")
+    }
+
+
+def test_repeated_extractions_are_byte_identical(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    loaded = load_config(config)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+
+    first_result = publish_extraction(image, loaded, first)
+    second_result = publish_extraction(image, loaded, second)
+
+    assert _artifact_bytes(first) == _artifact_bytes(second)
+    assert first_result.ordered == second_result.ordered
+    assert first_result.frames == second_result.frames
+
+
+def test_separate_process_extractions_are_byte_identical(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    console = Path(sys.executable).with_name("pixipix")
+    first = tmp_path / "process-first"
+    second = tmp_path / "process-second"
+
+    for output in (first, second):
+        result = subprocess.run(
+            [console, "extract", image, "--config", config, "--output", output],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    assert _artifact_bytes(first) == _artifact_bytes(second)
+
+
+def test_count_mismatch_stops_before_output(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    write_config(config, extraction_config(names=("only",), expected=None))
+    output = tmp_path / "output"
+
+    with pytest.raises(ProcessingError, match="PX_EXTRACT_003"):
+        publish_extraction(image, load_config(config), output)
+
+    assert not output.exists()
+
+
+def test_padded_crop_masks_neighboring_accepted_and_rejected_components(tmp_path: Path) -> None:
+    pixels = np.zeros((5, 8, 4), dtype=np.uint8)
+    pixels[1:3, 1:3] = (10, 20, 30, 255)
+    pixels[1, 4] = (200, 10, 10, 255)
+    image = tmp_path / "neighbors.png"
+    config = tmp_path / "neighbors.toml"
+    write_rgba(image, pixels)
+    write_config(
+        config,
+        extraction_config(names=("kept",), expected=1, minimum_area=2, padding=3),
+    )
+
+    result = publish_extraction(image, load_config(config), tmp_path / "output")
+
+    assert len(result.accepted) == 1
+    assert len(result.rejected) == 1
+    with Image.open(tmp_path / "output" / "frames" / "kept.png") as frame:
+        rendered = np.asarray(frame.convert("RGBA"))
+    assert rendered[1, 4].tolist() == [0, 0, 0, 0]
+    assert np.count_nonzero(rendered[:, :, 3]) == 4
+
+
+def test_synthetic_non_animal_asset_processes(tmp_path: Path) -> None:
+    pixels = np.zeros((8, 16, 4), dtype=np.uint8)
+    pixels[1:6, 1:5] = (50, 70, 90, 255)
+    pixels[2:7, 10:15] = (80, 120, 160, 255)
+    image = tmp_path / "geometric-robot.png"
+    config = tmp_path / "robot.toml"
+    write_rgba(image, pixels)
+    write_config(config, extraction_config(minimum_area=4, padding=0))
+
+    result = publish_extraction(image, load_config(config), tmp_path / "robot-output")
+
+    assert [frame.name for frame in result.frames] == ["idle", "signal"]
+    schema = (tmp_path / "robot-output" / "stage.json").read_text(encoding="utf-8").lower()
+    for forbidden in ("feline", "cat", "fur", "collar", "paw", "tail", "breed"):
+        assert forbidden not in schema
+
+
+def test_failed_staging_removes_temporary_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "output"
+
+    def fail_write(_path: Path, _pixels: object) -> None:
+        raise ProcessingError("PX_TEST", "encode", "simulated failure")
+
+    monkeypatch.setattr(extract_stage, "write_png", fail_write)
+    with pytest.raises(ProcessingError, match="PX_TEST"):
+        publish_extraction(image, load_config(config), output)
+
+    assert not output.exists()
+    assert list(tmp_path.glob(".output.pixipix-build-*")) == []
+
+
+def test_nonempty_foreign_directory_is_never_replaced(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "foreign"
+    output.mkdir()
+    keep = output / "keep.txt"
+    keep.write_text("important", encoding="utf-8")
+
+    with pytest.raises(ProcessingError, match="PX_OUTPUT_002"):
+        publish_extraction(image, load_config(config), output)
+    with pytest.raises(ProcessingError, match="PX_OUTPUT_003"):
+        publish_extraction(image, load_config(config), output, force=True)
+
+    assert keep.read_text(encoding="utf-8") == "important"
+
+
+def test_marker_alone_or_corrupt_stage_never_authorizes_replacement(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    loaded = load_config(config)
+    output = tmp_path / "forged"
+    output.mkdir()
+    marker = output / ".pixipix-output"
+    marker.write_text('{"owner":"pixipix","schemaVersion":1,"stage":"extract"}\n', encoding="utf-8")
+    keep = output / "keep.txt"
+    keep.write_text("important", encoding="utf-8")
+
+    with pytest.raises(ProcessingError, match="PX_OUTPUT_003"):
+        publish_extraction(image, loaded, output, force=True)
+
+    publish_extraction(image, loaded, tmp_path / "valid")
+    valid_stage = (tmp_path / "valid" / "stage.json").read_text(encoding="utf-8")
+    (output / "stage.json").write_text(
+        valid_stage.replace('"successful"', '"failed"'), encoding="utf-8"
+    )
+    with pytest.raises(ProcessingError, match="PX_OUTPUT_003"):
+        publish_extraction(image, loaded, output, force=True)
+    assert keep.read_text(encoding="utf-8") == "important"
+
+
+def test_existing_empty_output_is_replaced_without_force(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "empty"
+    output.mkdir()
+
+    publish_extraction(image, load_config(config), output)
+
+    assert (output / "stage.json").is_file()
+
+
+def test_target_created_during_staging_is_revalidated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "raced"
+    original_validate = extract_stage._validate_staged_output
+
+    def create_foreign_target(root: Path, metadata: StageMetadata) -> None:
+        original_validate(root, metadata)
+        output.mkdir()
+        (output / "keep.txt").write_text("important", encoding="utf-8")
+
+    monkeypatch.setattr(extract_stage, "_validate_staged_output", create_foreign_target)
+    with pytest.raises(ProcessingError, match="PX_OUTPUT_002"):
+        publish_extraction(image, load_config(config), output)
+
+    assert (output / "keep.txt").read_text(encoding="utf-8") == "important"
+    assert list(tmp_path.glob(".raced.pixipix-build-*")) == []
+
+
+def test_owned_output_can_be_replaced_with_force(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "owned"
+    loaded = load_config(config)
+    publish_extraction(image, loaded, output)
+    stale = output / "stale.txt"
+    stale.write_text("stale", encoding="utf-8")
+
+    publish_extraction(image, loaded, output, force=True)
+
+    assert not stale.exists()
+    assert (output / "stage.json").is_file()
+    assert list(tmp_path.glob(".owned.pixipix-backup-*")) == []
+
+
+def test_symlink_output_is_rejected(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    output = tmp_path / "linked"
+    output.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ProcessingError, match="PX_OUTPUT_004"):
+        publish_extraction(image, load_config(config), output, force=True)
+
+
+def test_symlink_parent_and_dangerous_repository_root_are_rejected(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+    real_parent = tmp_path / "real"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises(ProcessingError, match="PX_OUTPUT_004"):
+        publish_extraction(image, load_config(config), linked_parent / "output")
+    with pytest.raises(ProcessingError, match="PX_OUTPUT_007"):
+        publish_extraction(image, load_config(config), Path.cwd(), force=True)
+
+
+def test_root_owned_standard_tmp_alias_is_allowed_when_present() -> None:
+    if not Path("/tmp").is_symlink():
+        pytest.skip("platform /tmp is not a symlink")
+
+    extract_stage._validate_output_location(Path("/tmp/pixipix-validation-probe"))
+
+
+def test_previous_output_is_restored_on_publication_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "owned"
+    loaded = load_config(config)
+    publish_extraction(image, loaded, output)
+    original = _artifact_bytes(output)
+    real_replace = Path.replace
+
+    def fail_new_publication(self: Path, target: Path) -> Path:
+        if self.name.startswith(".owned.pixipix-build-") and target == output:
+            raise OSError("simulated rename failure")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_new_publication)
+    with pytest.raises(ProcessingError, match="PX_OUTPUT_005"):
+        publish_extraction(image, loaded, output, force=True)
+
+    assert _artifact_bytes(output) == original
+    assert list(tmp_path.glob(".owned.pixipix-backup-*")) == []

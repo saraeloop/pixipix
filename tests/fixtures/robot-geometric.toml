@@ -1,0 +1,27 @@
+[project]
+name = "geometric-robot-fixture"
+strict = true
+
+[source]
+format = "png"
+expected_components = 2
+max_width = 64
+max_height = 64
+max_pixels = 4096
+max_components = 16
+
+[background]
+mode = "alpha"
+alpha_threshold = 8
+
+[extract]
+connectivity = 8
+minimum_area = 4
+padding = 1
+row_tolerance = 2
+
+[frames]
+names = ["idle", "signal"]
+
+[pixelize]
+source_cell_size = 4
