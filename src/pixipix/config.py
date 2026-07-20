@@ -9,7 +9,7 @@ import tomllib
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, cast, get_args
 
 from pixipix.errors import ConfigurationError
 from pixipix.serialization import canonical_json_bytes
@@ -557,21 +557,12 @@ def _parse_output(root: dict[str, object]) -> OutputConfig | None:
             f"output canvas {frame_width}x{frame_height} exceeds the safety limit",
         )
     anchor = _string(table, "anchor", None)
-    anchors = {
-        "top-left",
-        "top-center",
-        "top-right",
-        "center-left",
-        "center",
-        "center-right",
-        "bottom-left",
-        "bottom-center",
-        "bottom-right",
-    }
-    if anchor not in anchors:
+    anchors = set(get_args(Anchor.__value__))
+    if anchor is None or anchor not in anchors:
         raise ConfigurationError("PX_ALIGN_CONFIG_003", f'unsupported output anchor "{anchor}"')
     clip_policy = _string(table, "clip_policy", "error")
-    if clip_policy not in {"error", "warn", "allow"}:
+    clip_policies = set(get_args(ClipPolicy.__value__))
+    if clip_policy not in clip_policies:
         raise ConfigurationError(
             "PX_ALIGN_CONFIG_004", f'unsupported output clipping policy "{clip_policy}"'
         )
