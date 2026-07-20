@@ -20,6 +20,18 @@ type ScaleMode = Literal["explicit-factor", "reference-frame-width", "reference-
 type RepresentativeStrategy = Literal["majority", "center", "alpha-weighted-majority"]
 type AlphaPolicy = Literal["binary", "preserve"]
 type RemainderPolicy = Literal["pad-transparent", "error", "crop-with-warning"]
+type Anchor = Literal[
+    "top-left",
+    "top-center",
+    "top-right",
+    "center-left",
+    "center",
+    "center-right",
+    "bottom-left",
+    "bottom-center",
+    "bottom-right",
+]
+type ClipPolicy = Literal["error", "warn", "allow"]
 
 MAX_SOURCE_PIXELS = 16_777_216
 MAX_FRAME_FILENAME_BYTES = 120
@@ -98,6 +110,23 @@ class PixelizeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class OutputConfig:
+    frame_width: int
+    frame_height: int
+    anchor: Anchor
+    baseline_y: int | None
+    effective_baseline_y: int | None
+    clip_policy: ClipPolicy = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class FrameOffset:
+    frame_name: str
+    dx: int
+    dy: int
+
+
+@dataclass(frozen=True, slots=True)
 class PixiPixConfig:
     project: ProjectConfig
     source: SourceConfig
@@ -107,6 +136,8 @@ class PixiPixConfig:
     scale: ScaleConfig | None
     frame_overrides: tuple[FrameScaleOverride, ...]
     pixelize: PixelizeConfig
+    output: OutputConfig | None
+    frame_offsets: tuple[FrameOffset, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,6 +508,127 @@ def _parse_pixelize(root: dict[str, object]) -> PixelizeConfig:
     )
 
 
+def _alignment_integer(
+    table: dict[str, object],
+    key: str,
+    default: int | None,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
+    value = table.get(key, default)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigurationError("PX_ALIGN_CONFIG_011", f'"{key}" must be an integer')
+    if minimum is not None and value < minimum:
+        raise ConfigurationError("PX_ALIGN_CONFIG_012", f'"{key}" must be at least {minimum}')
+    if maximum is not None and value > maximum:
+        raise ConfigurationError("PX_ALIGN_CONFIG_012", f'"{key}" must be at most {maximum}')
+    return value
+
+
+def _parse_output(root: dict[str, object]) -> OutputConfig | None:
+    raw = root.get("output")
+    if raw is None:
+        return None
+    table = _table(raw, "output")
+    _reject_unknown(
+        table,
+        {"frame_width", "frame_height", "anchor", "baseline_y", "clip_policy"},
+        "output",
+    )
+    missing = [key for key in ("frame_width", "frame_height", "anchor") if key not in table]
+    if missing:
+        raise ConfigurationError(
+            "PX_ALIGN_CONFIG_001", f'output configuration requires "{missing[0]}"'
+        )
+    frame_width = cast(
+        int,
+        _alignment_integer(table, "frame_width", None, minimum=1, maximum=MAX_SOURCE_PIXELS),
+    )
+    frame_height = cast(
+        int,
+        _alignment_integer(table, "frame_height", None, minimum=1, maximum=MAX_SOURCE_PIXELS),
+    )
+    if frame_width * frame_height > MAX_SOURCE_PIXELS:
+        raise ConfigurationError(
+            "PX_ALIGN_CONFIG_002",
+            f"output canvas {frame_width}x{frame_height} exceeds the safety limit",
+        )
+    anchor = _string(table, "anchor", None)
+    anchors = {
+        "top-left",
+        "top-center",
+        "top-right",
+        "center-left",
+        "center",
+        "center-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right",
+    }
+    if anchor not in anchors:
+        raise ConfigurationError("PX_ALIGN_CONFIG_003", f'unsupported output anchor "{anchor}"')
+    clip_policy = _string(table, "clip_policy", "error")
+    if clip_policy not in {"error", "warn", "allow"}:
+        raise ConfigurationError(
+            "PX_ALIGN_CONFIG_004", f'unsupported output clipping policy "{clip_policy}"'
+        )
+    baseline_y = _alignment_integer(
+        table,
+        "baseline_y",
+        None,
+        minimum=0,
+        maximum=frame_height,
+    )
+    is_bottom = anchor.startswith("bottom-")
+    if baseline_y is not None and not is_bottom:
+        raise ConfigurationError(
+            "PX_ALIGN_CONFIG_005", '"baseline_y" is permitted only with bottom anchors'
+        )
+    effective_baseline_y = frame_height if is_bottom and baseline_y is None else baseline_y
+    return OutputConfig(
+        frame_width=frame_width,
+        frame_height=frame_height,
+        anchor=cast(Anchor, anchor),
+        baseline_y=baseline_y,
+        effective_baseline_y=effective_baseline_y,
+        clip_policy=cast(ClipPolicy, clip_policy),
+    )
+
+
+def _parse_frame_offsets(root: dict[str, object], frames: FramesConfig) -> tuple[FrameOffset, ...]:
+    root_table = _table(root.get("frame_offsets", {}), "frame_offsets")
+    unknown_frames = sorted(set(root_table) - set(frames.names))
+    if unknown_frames:
+        raise ConfigurationError(
+            "PX_ALIGN_CONFIG_006",
+            f'frame offset names unknown frame "{unknown_frames[0]}"',
+        )
+    offsets: list[FrameOffset] = []
+    for frame_name in frames.names:
+        if frame_name not in root_table:
+            continue
+        table = _table(root_table[frame_name], f"frame_offsets.{frame_name}")
+        _reject_unknown(table, {"dx", "dy"}, f"frame_offsets.{frame_name}")
+        missing = [key for key in ("dx", "dy") if key not in table]
+        if missing:
+            raise ConfigurationError(
+                "PX_ALIGN_CONFIG_007",
+                f'frame offset "{frame_name}" requires "{missing[0]}"',
+            )
+        dx = cast(int, _alignment_integer(table, "dx", None))
+        dy = cast(int, _alignment_integer(table, "dy", None))
+        if dx == 0 and dy == 0:
+            raise ConfigurationError(
+                "PX_ALIGN_CONFIG_008",
+                f'frame offset "{frame_name}" must change at least one axis',
+            )
+        offsets.append(FrameOffset(frame_name, dx, dy))
+    return tuple(offsets)
+
+
 def load_config(path: Path) -> LoadedConfig:
     try:
         source_bytes = path.read_bytes()
@@ -502,6 +654,8 @@ def load_config(path: Path) -> LoadedConfig:
             "scale",
             "frame_overrides",
             "pixelize",
+            "output",
+            "frame_offsets",
         },
         "",
     )
@@ -522,6 +676,8 @@ def load_config(path: Path) -> LoadedConfig:
         scale=scale,
         frame_overrides=_parse_frame_overrides(root, frames, scale),
         pixelize=pixelize,
+        output=_parse_output(root),
+        frame_offsets=_parse_frame_offsets(root, frames),
     )
     expected = config.source.expected_components
     if expected is not None and expected != len(config.frames.names):

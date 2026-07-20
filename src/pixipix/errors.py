@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pixipix.models import AlignmentClippingFinding
 
 
 class ExitCode(IntEnum):
@@ -92,4 +96,26 @@ class ProcessingError(PixiPixError):
             path=path,
             frame=frame,
             remediation=remediation,
+        )
+
+
+class AlignmentClippingError(ProcessingError):
+    """Typed aggregate failure for deterministic alignment clipping findings."""
+
+    findings: tuple[AlignmentClippingFinding, ...]
+
+    def __init__(self, findings: tuple[AlignmentClippingFinding, ...]) -> None:
+        object.__setattr__(self, "findings", findings)
+        summary = "; ".join(
+            (
+                f"{item.frame_name}: left={item.left_overflow}, top={item.top_overflow}, "
+                f"right={item.right_overflow}, bottom={item.bottom_overflow}"
+            )
+            for item in findings
+        )
+        super().__init__(
+            "PX_ALIGN_CLIP_001",
+            "align",
+            f"alignment clips {len(findings)} frame(s): {summary}",
+            remediation="increase the canvas, adjust explicit offsets, or choose warn/allow",
         )

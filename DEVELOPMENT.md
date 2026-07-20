@@ -36,7 +36,7 @@ absolute paths.
 
 ```text
 Typer CLI adapter
-  -> inspect / extract / scale / pixelize stage orchestration
+  -> inspect / extract / scale / pixelize / align stage orchestration
       -> typed domain models + deterministic stage functions
           -> image, metadata, serialization, handoff, and filesystem helpers
               -> Pillow / NumPy / standard library
@@ -64,15 +64,31 @@ is added only above and to the right; cropping removes only those edges. The log
 array retains conventional top-left row storage while its partition contract is
 explicitly bottom-left anchored.
 
+`stages/align.py` owns logical-space fixed-canvas geometry and composition. Canvas
+coordinates have a top-left origin and describe pixel boundaries. Horizontal placement
+is left `0`, center `floor((canvas_width - input_width) / 2)`, or right
+`canvas_width - input_width`; vertical placement is the corresponding top/center rule or
+`effective_baseline_y - input_height` for bottom anchors. Bottom baselines default to the
+canvas height. Explicit offsets apply after base placement, and clipping is calculated
+from the final placement.
+
+Alignment derives exact per-edge overflow plus explicit visible source and destination
+rectangles before copying. Empty rectangles are always `(0, 0, 0, 0)`. Composition
+allocates a new transparent-black RGBA canvas and copies only the explicit visible slice;
+it performs no resize, resampling, color conversion, alpha conversion, or input mutation.
+The `error` policy aggregates findings and fails before publication, `warn` publishes one
+warning per clipped frame, and `allow` publishes findings without clipping warnings.
+
 `stages/io.py` owns strict prior-stage validation and the generic atomic publication
-path used by scale and pixelize. It validates ownership and schema markers, frame order,
+path used by scale, pixelize, and align. It validates ownership and schema markers, frame order,
 unique names and safe relative paths, RGBA mode, declared dimensions, optional declared
 hashes, and exact frame-directory contents. Publication builds in a temporary sibling,
 validates the complete payload, atomically replaces verified same-stage output under
 `--force`, and restores the prior output after rename failure where possible.
 
 Stage metadata is the process boundary. `scale` consumes successful schema-1 `extract`
-metadata; `pixelize` consumes successful schema-1 `scale` metadata. Both preserve
+metadata; `pixelize` consumes successful schema-1 `scale` metadata; `align` consumes
+successful, semantically coherent schema-1 `pixelize` metadata. These stages preserve
 metadata frame order and record a typed prior-stage identity. Current extraction
 metadata does not declare artifact hashes, so new stages validate hashes when present
 but do not invent a second hash policy.
@@ -85,13 +101,14 @@ typed input plus validated immutable configuration, return typed results, centra
 serialization, and make stage order recoverable from versioned metadata rather than
 filesystem enumeration. Do not create empty future-stage modules.
 
-Algorithm-focused tests live in `tests/unit/test_scale.py` and
-`tests/unit/test_pixelize.py`. Configuration matrices live in
-`tests/unit/test_pipeline_config.py`; stage handoff, atomic publication, CLI workflow,
-and separate-process determinism are exercised under `tests/integration/`. Run targeted
+Algorithm-focused tests live in `tests/unit/test_scale.py`, `tests/unit/test_pixelize.py`,
+and `tests/unit/test_align.py`. Configuration matrices live in
+`tests/unit/test_pipeline_config.py` and `tests/unit/test_alignment_config.py`; stage
+handoff, atomic publication, CLI workflow, and separate-process determinism are exercised
+under `tests/integration/`. Run targeted
 tests while iterating, then the complete quality gate above. Distribution verification
 must also install the built wheel into an isolated environment and exercise
-`extract -> scale -> pixelize` through the installed console script.
+`extract -> scale -> pixelize -> align` through the installed console script.
 
 ## Fixtures and provenance
 

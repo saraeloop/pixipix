@@ -76,6 +76,8 @@ def pipeline_config(
     ),
     overrides: str = "",
     padding: int = 0,
+    output: str = "",
+    offsets: str = "",
 ) -> str:
     return (
         extraction_config(names=names, expected=len(names), padding=padding)
@@ -84,5 +86,25 @@ def pipeline_config(
         + "\n\n[pixelize]\n"
         + pixelize
         + ("\n\n" + overrides if overrides else "")
+        + ("\n\n[output]\n" + output if output else "")
+        + ("\n\n" + offsets if offsets else "")
         + "\n"
     )
+
+
+def alignment_config(
+    *,
+    names: tuple[str, ...] = ("idle", "signal"),
+    width: int = 8,
+    height: int = 8,
+    anchor: str = "bottom-center",
+    baseline_y: int | None = None,
+    clip_policy: str | None = "error",
+    offsets: str = "",
+) -> str:
+    baseline = f"\nbaseline_y = {baseline_y}" if baseline_y is not None else ""
+    policy = f'\nclip_policy = "{clip_policy}"' if clip_policy is not None else ""
+    output = (
+        f'frame_width = {width}\nframe_height = {height}\nanchor = "{anchor}"{baseline}{policy}'
+    )
+    return pipeline_config(names=names, output=output, offsets=offsets)

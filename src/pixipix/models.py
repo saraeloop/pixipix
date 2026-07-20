@@ -151,7 +151,7 @@ class StageMetadata:
 class OutputMarker:
     schema_version: int
     owner: Literal["pixipix"]
-    stage: Literal["extract", "scale", "pixelize"]
+    stage: Literal["extract", "scale", "pixelize", "align"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +162,7 @@ class Dimensions:
 
 @dataclass(frozen=True, slots=True)
 class PriorStageIdentity:
-    stage: Literal["extract", "scale"]
+    stage: Literal["extract", "scale", "pixelize"]
     schema_version: int
     pixipix_version: str
     effective_config_sha256: str
@@ -236,4 +236,78 @@ class PixelizeStageMetadata:
     alpha_threshold: int
     remainder_policy: Literal["pad-transparent", "error", "crop-with-warning"]
     frames: tuple[PixelizeFrame, ...]
+    warnings: tuple[ProcessingWarning, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentRectangle:
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentClippingFinding:
+    frame_name: str
+    source_order: int
+    left_overflow: int
+    top_overflow: int
+    right_overflow: int
+    bottom_overflow: int
+    visible_source_rectangle: AlignmentRectangle
+    visible_destination_rectangle: AlignmentRectangle
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentFrame:
+    name: str
+    relative_path: PurePosixPath
+    source_order: int
+    input_width: int
+    input_height: int
+    base_x: int
+    base_y: int
+    offset_dx: int
+    offset_dy: int
+    final_x: int
+    final_y: int
+    left_overflow: int
+    top_overflow: int
+    right_overflow: int
+    bottom_overflow: int
+    clipped: bool
+    visible_source_rectangle: AlignmentRectangle
+    visible_destination_rectangle: AlignmentRectangle
+    output_width: int
+    output_height: int
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentStageMetadata:
+    schema_version: int
+    pixipix_version: str
+    stage: Literal["align"]
+    status: Literal["successful"]
+    prior_stage: PriorStageIdentity
+    source_config_sha256: str
+    effective_config_sha256: str
+    canvas_width: int
+    canvas_height: int
+    anchor: Literal[
+        "top-left",
+        "top-center",
+        "top-right",
+        "center-left",
+        "center",
+        "center-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right",
+    ]
+    configured_baseline_y: int | None
+    effective_baseline_y: int | None
+    clipping_policy: Literal["error", "warn", "allow"]
+    clipping_findings: tuple[AlignmentClippingFinding, ...]
+    frames: tuple[AlignmentFrame, ...]
     warnings: tuple[ProcessingWarning, ...]

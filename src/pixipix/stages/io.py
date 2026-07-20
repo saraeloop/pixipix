@@ -8,6 +8,7 @@ import math
 import shutil
 import stat
 import tempfile
+import warnings as python_warnings
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -27,7 +28,7 @@ from pixipix.models import (
 )
 from pixipix.serialization import to_json_data, write_json
 
-type StageName = Literal["extract", "scale", "pixelize"]
+type StageName = Literal["extract", "scale", "pixelize", "align"]
 
 
 @dataclass(slots=True)
@@ -51,6 +52,19 @@ class LoadedStageInput:
 class OutputFrameImage:
     relative_path: PurePosixPath
     pixels: UInt8Image
+
+
+def _is_schema_version_one(value: object) -> bool:
+    return type(value) is int and value == 1
+
+
+def _is_output_marker(value: dict[str, object], stage: StageName) -> bool:
+    return (
+        set(value) == {"owner", "schemaVersion", "stage"}
+        and value.get("owner") == "pixipix"
+        and _is_schema_version_one(value.get("schemaVersion"))
+        and value.get("stage") == stage
+    )
 
 
 def _read_json_object(path: Path, code: str) -> dict[str, object]:
@@ -113,9 +127,20 @@ def _dimensions(frame: dict[str, object], stage: str) -> Dimensions:
             _positive_dimension(width, "frame width"),
             _positive_dimension(height, "frame height"),
         )
-    raw = frame.get("outputDimensions")
+    if stage == "scale":
+        raw = frame.get("outputDimensions")
+        label = "scale"
+    elif stage == "pixelize":
+        raw = frame.get("logicalOutputDimensions")
+        label = "pixelize"
+    else:
+        raw = {
+            "width": frame.get("outputWidth"),
+            "height": frame.get("outputHeight"),
+        }
+        label = "align"
     if not isinstance(raw, dict):
-        raise UnsupportedInputError("PX_STAGE_007", "scale frame lacks output dimensions")
+        raise UnsupportedInputError("PX_STAGE_007", f"{label} frame lacks output dimensions")
     return Dimensions(
         _positive_dimension(raw.get("width"), "frame width"),
         _positive_dimension(raw.get("height"), "frame height"),
@@ -172,7 +197,7 @@ def _validate_scale_metadata(
     if (
         not isinstance(prior, dict)
         or prior.get("stage") != "extract"
-        or prior.get("schemaVersion") != 1
+        or not _is_schema_version_one(prior.get("schemaVersion"))
         or not isinstance(prior.get("pixipixVersion"), str)
         or not prior.get("pixipixVersion")
     ):
@@ -305,7 +330,122 @@ def _validate_scale_metadata(
         )
 
 
-def load_stage_input(root: Path, expected_stage: Literal["extract", "scale"]) -> LoadedStageInput:
+def _nonnegative_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise UnsupportedInputError("PX_STAGE_016", f"pixelize metadata has invalid {label}")
+    return value
+
+
+def _validate_pixelize_metadata(
+    metadata: dict[str, object], raw_frames: list[object], effective_hash: str
+) -> None:
+    prior = metadata.get("priorStage")
+    if (
+        not isinstance(prior, dict)
+        or prior.get("stage") != "scale"
+        or not _is_schema_version_one(prior.get("schemaVersion"))
+        or not isinstance(prior.get("pixipixVersion"), str)
+        or not prior.get("pixipixVersion")
+        or _sha256_string(prior.get("effectiveConfigSha256"), "prior effective config hash")
+        != effective_hash
+    ):
+        raise UnsupportedInputError(
+            "PX_STAGE_016", "pixelize metadata has invalid prior-stage identity"
+        )
+    cell_size = _positive_dimension(metadata.get("sourceCellSize"), "source cell size")
+    if metadata.get("cellGridOrigin") != "bottom-left":
+        raise UnsupportedInputError("PX_STAGE_016", "pixelize metadata has invalid grid origin")
+    if metadata.get("representative") not in {
+        "majority",
+        "center",
+        "alpha-weighted-majority",
+    }:
+        raise UnsupportedInputError("PX_STAGE_016", "pixelize metadata has invalid representative")
+    if metadata.get("alphaPolicy") not in {"binary", "preserve"}:
+        raise UnsupportedInputError("PX_STAGE_016", "pixelize metadata has invalid alpha policy")
+    alpha_threshold = metadata.get("alphaThreshold")
+    if (
+        isinstance(alpha_threshold, bool)
+        or not isinstance(alpha_threshold, int)
+        or not 0 <= alpha_threshold <= 255
+    ):
+        raise UnsupportedInputError("PX_STAGE_016", "pixelize metadata has invalid alpha threshold")
+    policy = metadata.get("remainderPolicy")
+    if policy not in {"pad-transparent", "error", "crop-with-warning"}:
+        raise UnsupportedInputError(
+            "PX_STAGE_016", "pixelize metadata has invalid remainder policy"
+        )
+    for raw_frame in raw_frames:
+        if not isinstance(raw_frame, dict):
+            raise UnsupportedInputError("PX_STAGE_016", "pixelize metadata has invalid frame entry")
+        input_dimensions = raw_frame.get("inputDimensions")
+        prepared_dimensions = raw_frame.get("preparedDimensions")
+        output_dimensions = raw_frame.get("logicalOutputDimensions")
+        if not all(
+            isinstance(item, dict)
+            for item in (input_dimensions, prepared_dimensions, output_dimensions)
+        ):
+            raise UnsupportedInputError("PX_STAGE_016", "pixelize frame has incomplete dimensions")
+        input_dimensions = cast(dict[str, object], input_dimensions)
+        prepared_dimensions = cast(dict[str, object], prepared_dimensions)
+        output_dimensions = cast(dict[str, object], output_dimensions)
+        input_width = _positive_dimension(input_dimensions.get("width"), "input frame width")
+        input_height = _positive_dimension(input_dimensions.get("height"), "input frame height")
+        prepared_width = _positive_dimension(
+            prepared_dimensions.get("width"), "prepared frame width"
+        )
+        prepared_height = _positive_dimension(
+            prepared_dimensions.get("height"), "prepared frame height"
+        )
+        logical_width = _positive_dimension(output_dimensions.get("width"), "logical frame width")
+        logical_height = _positive_dimension(
+            output_dimensions.get("height"), "logical frame height"
+        )
+        top_padding = _nonnegative_integer(raw_frame.get("topPadding"), "top padding")
+        right_padding = _nonnegative_integer(raw_frame.get("rightPadding"), "right padding")
+        top_crop = _nonnegative_integer(raw_frame.get("topCrop"), "top crop")
+        right_crop = _nonnegative_integer(raw_frame.get("rightCrop"), "right crop")
+        if (
+            prepared_width != logical_width * cell_size
+            or prepared_height != logical_height * cell_size
+            or prepared_width != input_width + right_padding - right_crop
+            or prepared_height != input_height + top_padding - top_crop
+        ):
+            raise UnsupportedInputError(
+                "PX_STAGE_016", "pixelize frame dimensions are internally inconsistent"
+            )
+        expected_right_remainder = input_width % cell_size
+        expected_top_remainder = input_height % cell_size
+        if policy == "pad-transparent":
+            expected_right_padding = (-input_width) % cell_size
+            expected_top_padding = (-input_height) % cell_size
+            coherent = (
+                right_padding == expected_right_padding
+                and top_padding == expected_top_padding
+                and right_crop == 0
+                and top_crop == 0
+            )
+        elif policy == "crop-with-warning":
+            coherent = (
+                right_padding == 0
+                and top_padding == 0
+                and right_crop == expected_right_remainder
+                and top_crop == expected_top_remainder
+            )
+        else:
+            coherent = (
+                right_padding == top_padding == right_crop == top_crop == 0
+                and expected_right_remainder == expected_top_remainder == 0
+            )
+        if not coherent:
+            raise UnsupportedInputError(
+                "PX_STAGE_016", "pixelize frame remainder metadata is inconsistent"
+            )
+
+
+def load_stage_input(
+    root: Path, expected_stage: Literal["extract", "scale", "pixelize"]
+) -> LoadedStageInput:
     """Load frames strictly in metadata order after validating the full handoff."""
 
     for candidate in (root, *root.parents):
@@ -318,8 +458,7 @@ def load_stage_input(root: Path, expected_stage: Literal["extract", "scale"]) ->
             "PX_STAGE_001", "stage input must be a real directory", path=root.name
         )
     marker = _read_json_object(root / ".pixipix-output", "PX_STAGE_002")
-    expected_marker = {"owner": "pixipix", "schemaVersion": 1, "stage": expected_stage}
-    if marker != expected_marker:
+    if not _is_output_marker(marker, expected_stage):
         actual = marker.get("stage")
         raise UnsupportedInputError(
             "PX_STAGE_003",
@@ -329,7 +468,7 @@ def load_stage_input(root: Path, expected_stage: Literal["extract", "scale"]) ->
         )
     metadata = _read_json_object(root / "stage.json", "PX_STAGE_004")
     schema = metadata.get("schemaVersion")
-    if schema != 1:
+    if not _is_schema_version_one(schema):
         raise UnsupportedInputError(
             "PX_STAGE_005", f"unsupported stage metadata schema {schema!r}", path=root.name
         )
@@ -363,6 +502,22 @@ def load_stage_input(root: Path, expected_stage: Literal["extract", "scale"]) ->
             raise UnsupportedInputError(
                 "PX_STAGE_009", f'scale metadata lacks required field "{missing[0]}"'
             )
+    elif expected_stage == "pixelize":
+        required = {
+            "priorStage",
+            "sourceCellSize",
+            "cellGridOrigin",
+            "representative",
+            "alphaPolicy",
+            "alphaThreshold",
+            "remainderPolicy",
+            "warnings",
+        }
+        missing = sorted(required - metadata.keys())
+        if missing:
+            raise UnsupportedInputError(
+                "PX_STAGE_016", f'pixelize metadata lacks required field "{missing[0]}"'
+            )
     raw_frames = metadata.get("frames")
     if not isinstance(raw_frames, list) or not raw_frames:
         raise UnsupportedInputError(
@@ -371,6 +526,8 @@ def load_stage_input(root: Path, expected_stage: Literal["extract", "scale"]) ->
     warnings = _processing_warnings(metadata)
     if expected_stage == "scale":
         _validate_scale_metadata(metadata, raw_frames, effective_hash)
+    elif expected_stage == "pixelize":
+        _validate_pixelize_metadata(metadata, raw_frames, effective_hash)
     frames_root = root / "frames"
     if frames_root.is_symlink() or not frames_root.is_dir():
         raise UnsupportedInputError("PX_STAGE_011", "stage frame directory is missing or unsafe")
@@ -387,7 +544,8 @@ def load_stage_input(root: Path, expected_stage: Literal["extract", "scale"]) ->
             raise UnsupportedInputError(
                 "PX_STAGE_010", "stage frame names must be non-empty and unique"
             )
-        if frame.get("sourceOrder") != source_order:
+        raw_source_order = frame.get("sourceOrder")
+        if type(raw_source_order) is not int or raw_source_order != source_order:
             raise UnsupportedInputError(
                 "PX_STAGE_010", "stage frame order is missing or non-contiguous"
             )
@@ -402,21 +560,29 @@ def load_stage_input(root: Path, expected_stage: Literal["extract", "scale"]) ->
             )
         dimensions = _dimensions(frame, expected_stage)
         try:
-            with Image.open(path) as image:
-                image.load()
-                if (
-                    image.format != "PNG"
-                    or image.mode != "RGBA"
-                    or image.size != (dimensions.width, dimensions.height)
-                ):
-                    raise UnsupportedInputError(
-                        "PX_STAGE_012",
-                        "frame PNG mode or dimensions do not match metadata",
-                        path=relative.as_posix(),
-                    )
-                pixels = np.array(image, dtype=np.uint8, copy=True)
+            with python_warnings.catch_warnings():
+                python_warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(path) as image:
+                    if (
+                        image.format != "PNG"
+                        or image.mode != "RGBA"
+                        or image.size != (dimensions.width, dimensions.height)
+                    ):
+                        raise UnsupportedInputError(
+                            "PX_STAGE_012",
+                            "frame PNG mode or dimensions do not match metadata",
+                            path=relative.as_posix(),
+                        )
+                    image.load()
+                    pixels = np.array(image, dtype=np.uint8, copy=True)
         except UnsupportedInputError:
             raise
+        except (Image.DecompressionBombWarning, Image.DecompressionBombError) as error:
+            raise UnsupportedInputError(
+                "PX_STAGE_012",
+                "frame PNG dimensions exceed decoder safety limits",
+                path=relative.as_posix(),
+            ) from error
         except (UnidentifiedImageError, OSError) as error:
             raise UnsupportedInputError(
                 "PX_STAGE_011", "unable to decode declared frame", path=relative.as_posix()
@@ -489,10 +655,10 @@ def _valid_owned_output(path: Path, stage: StageName) -> bool:
     try:
         marker = _read_json_object(path / ".pixipix-output", "PX_STAGE")
         metadata = _read_json_object(path / "stage.json", "PX_STAGE")
-        if marker != {"owner": "pixipix", "schemaVersion": 1, "stage": stage}:
+        if not _is_output_marker(marker, stage):
             return False
         if (
-            metadata.get("schemaVersion") != 1
+            not _is_schema_version_one(metadata.get("schemaVersion"))
             or metadata.get("stage") != stage
             or metadata.get("status") != "successful"
         ):
@@ -502,7 +668,11 @@ def _valid_owned_output(path: Path, stage: StageName) -> bool:
             return False
         seen: set[str] = set()
         for order, item in enumerate(frames):
-            if not isinstance(item, dict) or item.get("sourceOrder") != order:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("sourceOrder")) is not int
+                or item.get("sourceOrder") != order
+            ):
                 return False
             relative = _safe_frame_relative(item.get("relativePath"))
             if relative.as_posix().casefold() in seen:
@@ -512,26 +682,25 @@ def _valid_owned_output(path: Path, stage: StageName) -> bool:
                 return False
             if stage == "extract":
                 dimensions = _dimensions(item, "extract")
-            elif stage == "scale":
-                dimensions = _dimensions(item, "scale")
             else:
-                raw_dimensions = item.get("logicalOutputDimensions")
-                if not isinstance(raw_dimensions, dict):
-                    return False
-                dimensions = Dimensions(
-                    _positive_dimension(raw_dimensions.get("width"), "frame width"),
-                    _positive_dimension(raw_dimensions.get("height"), "frame height"),
-                )
+                dimensions = _dimensions(item, stage)
             try:
-                with Image.open(frame_path) as image:
-                    image.load()
-                    if (
-                        image.format != "PNG"
-                        or image.mode != "RGBA"
-                        or image.size != (dimensions.width, dimensions.height)
-                    ):
-                        return False
-            except (UnidentifiedImageError, OSError):
+                with python_warnings.catch_warnings():
+                    python_warnings.simplefilter("error", Image.DecompressionBombWarning)
+                    with Image.open(frame_path) as image:
+                        if (
+                            image.format != "PNG"
+                            or image.mode != "RGBA"
+                            or image.size != (dimensions.width, dimensions.height)
+                        ):
+                            return False
+                        image.load()
+            except (
+                Image.DecompressionBombWarning,
+                Image.DecompressionBombError,
+                UnidentifiedImageError,
+                OSError,
+            ):
                 return False
             seen.add(relative.as_posix().casefold())
         return True
@@ -587,7 +756,7 @@ def _validate_staged(
         raise ProcessingError(
             "PX_OUTPUT_006", "publish", "staged ownership marker is invalid"
         ) from error
-    if marker != {"owner": "pixipix", "schemaVersion": 1, "stage": stage}:
+    if not _is_output_marker(marker, stage):
         raise ProcessingError("PX_OUTPUT_006", "publish", "staged ownership marker is invalid")
     stage_path = root / "stage.json"
     try:
@@ -609,17 +778,24 @@ def _validate_staged(
         path = root.joinpath(*relative.parts)
         expected.add(path)
         try:
-            with Image.open(path) as image:
-                image.load()
-                size = (frame.pixels.shape[1], frame.pixels.shape[0])
-                if image.format != "PNG" or image.mode != "RGBA" or image.size != size:
-                    raise ProcessingError(
-                        "PX_OUTPUT_006",
-                        "publish",
-                        "staged frame is invalid",
-                        path=relative.as_posix(),
-                    )
-        except (UnidentifiedImageError, OSError) as error:
+            with python_warnings.catch_warnings():
+                python_warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(path) as image:
+                    size = (frame.pixels.shape[1], frame.pixels.shape[0])
+                    if image.format != "PNG" or image.mode != "RGBA" or image.size != size:
+                        raise ProcessingError(
+                            "PX_OUTPUT_006",
+                            "publish",
+                            "staged frame is invalid",
+                            path=relative.as_posix(),
+                        )
+                    image.load()
+        except (
+            Image.DecompressionBombWarning,
+            Image.DecompressionBombError,
+            UnidentifiedImageError,
+            OSError,
+        ) as error:
             raise ProcessingError(
                 "PX_OUTPUT_006", "publish", "staged frame is invalid", path=relative.as_posix()
             ) from error
@@ -632,7 +808,7 @@ def _validate_staged(
 
 def publish_stage_output(
     output: Path,
-    stage: Literal["scale", "pixelize"],
+    stage: Literal["scale", "pixelize", "align"],
     metadata: object,
     frames: tuple[OutputFrameImage, ...],
     *,
@@ -640,16 +816,17 @@ def publish_stage_output(
 ) -> None:
     """Publish a complete typed stage output through a temporary sibling."""
 
-    _prepare_target(output, force, stage)
     parent = output.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    _prepare_target(output, force, stage)
     build_prefix = f".{output.name}.pixipix-build-"
     backup_prefix = f".{output.name}.pixipix-backup-"
-    build_root = Path(tempfile.mkdtemp(prefix=build_prefix, dir=parent))
+    build_root: Path | None = None
     backup_root: Path | None = None
     previous: Path | None = None
     try:
+        _prepare_target(output, force, stage)
+        parent.mkdir(parents=True, exist_ok=True)
+        _prepare_target(output, force, stage)
+        build_root = Path(tempfile.mkdtemp(prefix=build_prefix, dir=parent))
         frames_root = build_root / "frames"
         frames_root.mkdir()
         write_json(build_root / ".pixipix-output", OutputMarker(1, "pixipix", stage))
@@ -685,7 +862,7 @@ def publish_stage_output(
             "PX_OUTPUT_005", "publish", f"unable to write {stage} output", path=output.name
         ) from error
     finally:
-        if build_root.exists():
+        if build_root is not None and build_root.exists():
             _remove_tree(build_root, parent, build_prefix)
         if backup_root is not None and backup_root.exists():
             if previous is not None and previous.exists() and not output.exists():
