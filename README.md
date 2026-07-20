@@ -25,6 +25,17 @@ AI-generated raster inputs all work identically.
 > PixiPix is in active development. APIs and output contracts may change
 > during the alpha series.
 
+## Example
+
+Pixie, the official PixiPix mascot, demonstrates the complete current
+pipeline on a real multi-frame raster source:
+
+```text
+inspect → extract → scale → pixelize → align
+```
+
+See [`examples/pixi-demo/`](examples/pixi-demo/).
+
 ## Requirements
 
 - Python 3.12

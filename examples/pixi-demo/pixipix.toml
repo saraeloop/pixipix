@@ -1,0 +1,91 @@
+[project]
+name = "pixi-demo"
+strict = true
+
+[source]
+format = "png"
+expected_components = 30
+max_width = 4096
+max_height = 4096
+max_pixels = 16777216
+max_components = 128
+
+[background]
+mode = "alpha"
+alpha_threshold = 8
+
+[extract]
+connectivity = 8
+minimum_area = 1500
+maximum_area = 50000
+padding = 0
+row_tolerance = 80
+
+[frames]
+names = [
+  "pixi-stand-cube",
+  "pixi-wave-wand",
+  "pixi-point-cube",
+  "pixi-walk-side",
+  "pixi-stand-back",
+  "pixi-cast",
+  "pixi-fly-cube",
+  "pixi-sit",
+  "pixi-leap",
+  "pixi-read-map",
+  "pixi-fly-wand",
+  "pixi-hold-cube",
+  "pixi-fly",
+  "pixi-crawl",
+  "pixi-nap",
+  "pixi-hide-wall",
+  "pixi-confused",
+  "pixi-cheer",
+  "pixi-heart",
+  "pixi-ready",
+  "pixi-magnify",
+  "pixi-cry",
+  "pixi-present-wand",
+  "pixi-point",
+  "pixi-magic-circle",
+  "pixi-cast-back",
+  "pixi-read-book",
+  "pixi-cookie",
+  "pixi-laptop",
+  "pixi-sleep",
+]
+
+[scale]
+mode = "reference-frame-height"
+reference_frame = "pixi-stand-cube"
+target_size = 48
+
+[pixelize]
+source_cell_size = 4
+representative = "alpha-weighted-majority"
+alpha_policy = "preserve"
+alpha_threshold = 128
+remainder_policy = "pad-transparent"
+
+[output]
+frame_width = 64
+frame_height = 64
+anchor = "bottom-center"
+baseline_y = 60
+clip_policy = "error"
+
+[frame_offsets.pixi-fly-cube]
+dx = 0
+dy = -4
+
+[frame_offsets.pixi-leap]
+dx = 0
+dy = -4
+
+[frame_offsets.pixi-fly-wand]
+dx = 0
+dy = -4
+
+[frame_offsets.pixi-fly]
+dx = 0
+dy = -6
