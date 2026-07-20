@@ -13,10 +13,13 @@
 
 PixiPix is a deterministic, local-first command-line tool for extracting isolated
 visual frames from PNG source sheets, scaling them with one shared geometric ruler,
-and converting configured pseudo-pixel cells into true logical RGBA pixels.
+converting configured pseudo-pixel cells into true logical RGBA pixels, and placing
+those frames on deterministic fixed-size canvases.
 
-PixiPix is content-agnostic. It operates on pixels and geometry only: it does not
-recognize subjects, infer frame meaning, or assign semantic names.
+PixiPix is content- and source-agnostic. It never recognizes subjects or
+infers what a frame depicts, and it never asks how a sheet was made:
+hand-drawn, rendered, scanned, exported, procedurally generated, and
+AI-generated raster inputs all work identically.
 
 > **Note:**
 > PixiPix is in active development. APIs and output contracts may change
@@ -43,7 +46,7 @@ To build an installable wheel:
 
 ```bash
 uv build
-uv tool install dist/pixipix-0.1.0-py3-none-any.whl
+uv tool install dist/pixipix-0.1.0a3-py3-none-any.whl
 pixipix --help
 ```
 
@@ -85,6 +88,17 @@ representative = "alpha-weighted-majority"
 alpha_policy = "binary"
 alpha_threshold = 128
 remainder_policy = "pad-transparent"
+
+[output]
+frame_width = 48
+frame_height = 48
+anchor = "bottom-center"
+baseline_y = 44
+clip_policy = "error"
+
+[frame_offsets.frame-b]
+dx = 1
+dy = -1
 ```
 
 Inspect the source without writing files:
@@ -107,6 +121,10 @@ uv run pixipix scale build/extracted \
 uv run pixipix pixelize build/scaled \
   --config pixipix.toml \
   --output build/pixelized
+
+uv run pixipix align build/pixelized \
+  --config pixipix.toml \
+  --output build/aligned
 ```
 
 The accepted component count must match both `source.expected_components` and the
@@ -164,6 +182,17 @@ Consumes a valid scale-stage directory and emits one logical RGBA pixel per conf
 source cell. The grid is anchored at bottom-left: incomplete space belongs to the top
 and right edges. Output is always at 1× logical resolution and is not aligned,
 palette-locked, or packed.
+
+### `pixipix align`
+
+```text
+pixipix align INPUT_DIR --config CONFIG --output OUTPUT [--force]
+```
+
+Consumes valid pixelize-stage output and places every logical RGBA frame on the same
+configured transparent-black canvas. Alignment copies visible pixels exactly; it never
+resizes, resamples, recolors, or changes alpha. Placement, per-edge overflow, and visible
+source/destination rectangles are recorded in versioned metadata.
 
 ### Other commands
 
@@ -310,6 +339,54 @@ Remainder policies are `pad-transparent` (minimal top/right transparent-black pa
 `error`, and `crop-with-warning` (top/right incomplete strips only). Cropping that would
 reduce a non-empty frame to zero dimensions is rejected.
 
+### Fixed-canvas alignment
+
+```toml
+[output]
+frame_width = 48
+frame_height = 48
+anchor = "bottom-center"
+baseline_y = 44
+clip_policy = "error"
+
+[frame_offsets.frame-b]
+dx = 2
+dy = -1
+```
+
+`frame_width`, `frame_height`, and `anchor` are required by `align`. Supported anchors
+are `top-left`, `top-center`, `top-right`, `center-left`, `center`, `center-right`,
+`bottom-left`, `bottom-center`, and `bottom-right`.
+
+Canvas coordinates use a top-left origin and refer to pixel boundaries. For bottom
+anchors, `baseline_y` is the boundary where the input frame's bottom edge lands before
+offsets; it defaults to `frame_height` and may range from zero through `frame_height`,
+inclusive. Non-bottom anchors reject `baseline_y`.
+
+Center placement uses mathematical floor:
+
+```text
+floor((canvas_size - input_size) / 2)
+```
+
+An odd remainder leaves the extra transparent pixel on the right or bottom. The same
+floor rule applies to negative differences when an input is larger than its canvas.
+Explicit integer frame offsets apply after anchor placement. A declared offset must
+change at least one axis; `{dx = 0, dy = 0}` is rejected during configuration validation,
+and every valid declared offset contributes one deterministic alignment warning when
+alignment metadata is published.
+
+Clipping is evaluated after offsets. Policies are:
+
+- `error` (default): aggregate every clipped frame and publish nothing
+- `warn`: publish, record findings, and add one warning per clipped frame
+- `allow`: publish and record findings without clipping warnings
+
+All policies retain exact `leftOverflow`, `topOverflow`, `rightOverflow`, and
+`bottomOverflow` counts. Metadata also records visible source and destination rectangles
+as `x`, `y`, `width`, and `height`; every empty rectangle uses the canonical all-zero
+representation.
+
 ## Output
 
 ```text
@@ -333,6 +410,13 @@ build/pixelized/
 │   ├── frame-a.png
 │   └── frame-b.png
 └── stage.json
+
+build/aligned/
+├── .pixipix-output
+├── frames/
+│   ├── frame-a.png
+│   └── frame-b.png
+└── stage.json
 ```
 
 `stage.json` records:
@@ -351,6 +435,8 @@ Scale metadata records prior-stage identity, config hashes, the shared global fa
 reference measurements, overrides, effective frame factors, dimensions, and warnings.
 Pixelize metadata records prior-stage identity, the bottom-left grid origin, cell size,
 selection and alpha policies, per-frame top/right padding or crop, logical dimensions,
+and warnings. Align metadata records the canvas, anchor, configured/effective baseline,
+clipping policy, offsets, final placement, exact overflow, explicit visible rectangles,
 and warnings. Frame order always comes from `stage.json`, never directory enumeration.
 
 ## Output safety
@@ -408,9 +494,10 @@ Expected domain failures do not print tracebacks.
 - strict configuration and one shared scale factor per extracted sheet
 - component filtering by minimum and optional maximum area
 - explicit source-cell size; no source-cell inference or automatic frame normalization
-- no fixed-canvas alignment, anchors, baseline placement, clipping, palette processing,
-  recoloring, atlas packing, final manifest/report, animation generation, or editor
-  integration
+- explicit fixed canvas and placement; no automatic canvas, anchor, baseline, or offset
+  inference
+- no palette processing, recoloring, atlas packing, final manifest/report, animation
+  generation, or editor integration
 - no end-to-end `build` command yet
 
 ## Development

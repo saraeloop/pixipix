@@ -12,6 +12,7 @@ from pixipix import __version__
 from pixipix.config import load_config
 from pixipix.errors import ExitCode, PixiPixError
 from pixipix.models import Component, InspectionResult
+from pixipix.stages.align import publish_align
 from pixipix.stages.extract import inspect_source, publish_extraction
 from pixipix.stages.pixelize import publish_pixelize
 from pixipix.stages.scale import publish_scale
@@ -179,6 +180,22 @@ def pixelize_command(
         lambda: publish_pixelize(input_dir, load_config(config_path), output, force=force)
     )
     typer.echo(f"pixelized {len(result.frames)} frame(s) to {output}")
+
+
+@app.command("align")
+def align_command(
+    input_dir: Annotated[Path, typer.Argument(exists=False, file_okay=False, metavar="INPUT_DIR")],
+    config_path: Annotated[Path, typer.Option("--config", dir_okay=False, metavar="CONFIG")],
+    output: Annotated[Path, typer.Option("--output", file_okay=False, metavar="OUTPUT")],
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Replace only verified PixiPix-owned align output."),
+    ] = False,
+) -> None:
+    """Place logical RGBA frames on one deterministic fixed canvas."""
+
+    result = _call(lambda: publish_align(input_dir, load_config(config_path), output, force=force))
+    typer.echo(f"aligned {len(result.frames)} frame(s) to {output}")
 
 
 def main() -> None:
