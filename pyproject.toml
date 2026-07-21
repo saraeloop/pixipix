@@ -36,6 +36,12 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+exclude = [
+  "/assets/brand",
+  "/examples/pixi-demo",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pixipix"]
 

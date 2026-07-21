@@ -51,6 +51,7 @@ LOCAL_PATH_PATTERNS = (
 EXPECTED_SDIST_FILES = {
     ".gitignore",
     ".python-version",
+    "ASSET-LICENSES.md",
     "DEVELOPMENT.md",
     "LICENSE",
     "README.md",
@@ -61,6 +62,8 @@ EXPECTED_SDIST_FILES = {
     "tests/fixtures/robot-geometric.toml",
     "uv.lock",
 }
+RESTRICTED_PATHS_START = "<!-- pixipix:restricted-distribution-paths:start -->"
+RESTRICTED_PATHS_END = "<!-- pixipix:restricted-distribution-paths:end -->"
 
 
 class ReleaseValidationError(ValueError):
@@ -148,7 +151,7 @@ def _normalized_distribution_name(name: str) -> str:
     return re.sub(r"[-_.]+", "_", name).lower()
 
 
-def _validate_member_name(archive: Path, name: str) -> PurePosixPath:
+def _normalize_member_name(archive: Path, name: str) -> str:
     member = PurePosixPath(name)
     if member.is_absolute() or ".." in member.parts or "\\" in name:
         raise ReleaseValidationError(f"{archive}: unsafe archive member path {name!r}")
@@ -169,7 +172,7 @@ def _validate_member_name(archive: Path, name: str) -> PurePosixPath:
         raise ReleaseValidationError(
             f"{archive}: secret-like file {name!r} must not be distributed"
         )
-    return member
+    return member.as_posix()
 
 
 def _validate_member_content(archive: Path, name: str, content: bytes, project_root: Path) -> None:
@@ -195,14 +198,14 @@ def _read_wheel(path: Path, project_root: Path) -> Archive:
                     raise ReleaseValidationError(
                         f"{path}: symbolic link member {info.filename!r} is forbidden"
                     )
-                _validate_member_name(path, info.filename)
-                if info.filename in files:
+                member_name = _normalize_member_name(path, info.filename)
+                if member_name in files:
                     raise ReleaseValidationError(
-                        f"{path}: duplicate archive member {info.filename!r}"
+                        f"{path}: duplicate normalized archive member {member_name!r}"
                     )
                 content = wheel.read(info)
-                _validate_member_content(path, info.filename, content, project_root)
-                files[info.filename] = content
+                _validate_member_content(path, member_name, content, project_root)
+                files[member_name] = content
     except (OSError, zipfile.BadZipFile) as error:
         raise ReleaseValidationError(f"cannot inspect wheel {path}: {error}") from error
     return Archive(path=path, files=files)
@@ -219,15 +222,17 @@ def _read_sdist(path: Path, project_root: Path) -> Archive:
                     raise ReleaseValidationError(
                         f"{path}: non-regular member {info.name!r} is forbidden"
                     )
-                _validate_member_name(path, info.name)
-                if info.name in files:
-                    raise ReleaseValidationError(f"{path}: duplicate archive member {info.name!r}")
+                member_name = _normalize_member_name(path, info.name)
+                if member_name in files:
+                    raise ReleaseValidationError(
+                        f"{path}: duplicate normalized archive member {member_name!r}"
+                    )
                 extracted = sdist.extractfile(info)
                 if extracted is None:
                     raise ReleaseValidationError(f"{path}: cannot read member {info.name!r}")
                 content = extracted.read()
-                _validate_member_content(path, info.name, content, project_root)
-                files[info.name] = content
+                _validate_member_content(path, member_name, content, project_root)
+                files[member_name] = content
     except (OSError, tarfile.TarError) as error:
         raise ReleaseValidationError(
             f"cannot inspect source distribution {path}: {error}"
@@ -276,10 +281,85 @@ def _single_file(directory: Path, pattern: str, kind: str) -> Path:
     return matches[0]
 
 
+def load_restricted_distribution_prefixes(manifest_path: Path) -> tuple[str, ...]:
+    """Load canonical repository-only directory prefixes from the asset manifest."""
+
+    try:
+        manifest = manifest_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ReleaseValidationError(
+            f"cannot read asset manifest {manifest_path}: {error}"
+        ) from error
+
+    if manifest.count(RESTRICTED_PATHS_START) != 1 or manifest.count(RESTRICTED_PATHS_END) != 1:
+        raise ReleaseValidationError(
+            f"{manifest_path}: expected exactly one restricted distribution path block"
+        )
+    _, block_and_end = manifest.split(RESTRICTED_PATHS_START, maxsplit=1)
+    block, _ = block_and_end.split(RESTRICTED_PATHS_END, maxsplit=1)
+
+    prefixes: list[str] = []
+    for line in block.splitlines():
+        declared = line.strip()
+        if not declared:
+            continue
+        member = PurePosixPath(declared)
+        normalized = member.as_posix()
+        canonical = f"{normalized.rstrip('/')}/"
+        if (
+            member.is_absolute()
+            or ".." in member.parts
+            or "\\" in declared
+            or normalized in {"", "."}
+            or declared != canonical
+        ):
+            raise ReleaseValidationError(
+                f"{manifest_path}: restricted distribution path {declared!r} "
+                "must be a canonical relative directory ending in '/'"
+            )
+        prefixes.append(canonical)
+
+    if not prefixes:
+        raise ReleaseValidationError(
+            f"{manifest_path}: restricted distribution path block is empty"
+        )
+    if len(prefixes) != len(set(prefixes)):
+        raise ReleaseValidationError(f"{manifest_path}: duplicate restricted distribution path")
+    return tuple(prefixes)
+
+
+def _restricted_distribution_members(
+    names: set[str], prefixes: tuple[str, ...], *, archive_root: str | None = None
+) -> list[str]:
+    restricted: list[str] = []
+    for name in names:
+        member = PurePosixPath(name)
+        if archive_root is not None:
+            if not member.parts or member.parts[0] != archive_root:
+                continue
+            relative = PurePosixPath(*member.parts[1:]).as_posix()
+        else:
+            relative = member.as_posix()
+        relative_parts = PurePosixPath(relative).parts
+        candidates = {
+            PurePosixPath(*relative_parts[index:]).as_posix().casefold()
+            for index in range(len(relative_parts))
+        }
+        if any(
+            candidate == prefix.removesuffix("/").casefold()
+            or candidate.startswith(prefix.casefold())
+            for candidate in candidates
+            for prefix in prefixes
+        ):
+            restricted.append(name)
+    return sorted(restricted)
+
+
 def inspect_distributions(dist_dir: Path, project_root: Path) -> tuple[Path, Path]:
     """Validate the exact wheel and sdist intended for artifact upload."""
 
     metadata = load_project_metadata(project_root / "pyproject.toml")
+    restricted_prefixes = load_restricted_distribution_prefixes(project_root / "ASSET-LICENSES.md")
     normalized_name = _normalized_distribution_name(metadata.name)
     wheel_path = _single_file(dist_dir, "*.whl", "wheel")
     sdist_path = _single_file(dist_dir, "*.tar.gz", "source distribution")
@@ -297,6 +377,12 @@ def inspect_distributions(dist_dir: Path, project_root: Path) -> tuple[Path, Pat
 
     wheel = _read_wheel(wheel_path, project_root)
     sdist = _read_sdist(sdist_path, project_root)
+    restricted_wheel = _restricted_distribution_members(set(wheel.files), restricted_prefixes)
+    if restricted_wheel:
+        raise ReleaseValidationError(
+            f"{wheel_path}: restricted repository-only asset path "
+            f"{restricted_wheel[0]!r} must not be distributed"
+        )
     dist_info = f"{normalized_name}-{metadata.version}.dist-info"
     metadata_member = f"{dist_info}/METADATA"
     if metadata_member not in wheel.files:
@@ -357,15 +443,27 @@ def inspect_distributions(dist_dir: Path, project_root: Path) -> tuple[Path, Pat
     sdist_root = f"{normalized_name}-{metadata.version}"
     if not sdist.files or any(PurePosixPath(name).parts[0] != sdist_root for name in sdist.files):
         raise ReleaseValidationError(f"{sdist_path}: every member must be rooted at {sdist_root!r}")
+    restricted_sdist = _restricted_distribution_members(
+        set(sdist.files), restricted_prefixes, archive_root=sdist_root
+    )
+    if restricted_sdist:
+        raise ReleaseValidationError(
+            f"{sdist_path}: restricted repository-only asset path "
+            f"{restricted_sdist[0]!r} must not be distributed"
+        )
     expected_sdist = {f"{sdist_root}/{name}" for name in EXPECTED_SDIST_FILES}
     expected_sdist.update(f"{sdist_root}/src/{name}" for name in expected_runtime)
     missing_sdist = sorted(expected_sdist - set(sdist.files))
     if missing_sdist:
         raise ReleaseValidationError(f"{sdist_path}: missing expected member {missing_sdist[0]!r}")
+    manifest_member = f"{sdist_root}/ASSET-LICENSES.md"
+    expected_manifest = (project_root / "ASSET-LICENSES.md").read_bytes()
+    if sdist.files.get(manifest_member) != expected_manifest:
+        raise ReleaseValidationError(
+            f"{sdist_path}: packaged asset manifest {manifest_member!r} is missing or incorrect"
+        )
     if not any(name.startswith(f"{sdist_root}/tests/") for name in sdist.files):
         raise ReleaseValidationError(f"{sdist_path}: source distribution must contain tests")
-    if not any(name.startswith(f"{sdist_root}/examples/") for name in sdist.files):
-        raise ReleaseValidationError(f"{sdist_path}: source distribution must contain examples")
 
     pkg_info_member = f"{sdist_root}/PKG-INFO"
     if pkg_info_member not in sdist.files:
