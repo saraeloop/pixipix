@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -15,8 +16,11 @@ from scripts.release import (
     ReleaseValidationError,
     compare_wheels,
     inspect_distributions,
+    load_restricted_distribution_prefixes,
     validate_release_tag,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write_project(root: Path, version: str = "0.1.0") -> Path:
@@ -36,6 +40,7 @@ def _write_project(root: Path, version: str = "0.1.0") -> Path:
         encoding="utf-8",
     )
     (root / "LICENSE").write_text(license_text, encoding="utf-8")
+    shutil.copy2(PROJECT_ROOT / "ASSET-LICENSES.md", root / "ASSET-LICENSES.md")
     package = root / "src" / "pixipix"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text('"""fixture package"""\n', encoding="utf-8")
@@ -91,6 +96,7 @@ def _write_sdist(
     members = {name: f"fixture {name}\n".encode() for name in EXPECTED_SDIST_FILES}
     members.update(
         {
+            "ASSET-LICENSES.md": (project / "ASSET-LICENSES.md").read_bytes(),
             "LICENSE": (project / "LICENSE").read_bytes(),
             "pyproject.toml": (project / "pyproject.toml").read_bytes(),
             "src/pixipix/__init__.py": b'"""fixture package"""\n',
@@ -217,6 +223,124 @@ def test_distribution_inspection_accepts_expected_metadata_and_contents(tmp_path
 
     assert wheel.suffix == ".whl"
     assert sdist.name.endswith(".tar.gz")
+
+
+@pytest.mark.parametrize(
+    ("artifact", "path"),
+    [
+        ("wheel", "assets/brand/pixipix-logo.png"),
+        ("wheel", "./assets/brand/pixipix-logo.png"),
+        ("wheel", "pixipix-0.1.0a5/assets/brand/pixipix-logo.png"),
+        ("wheel", "pixipix-0.1.0a5/./assets/brand/pixipix-logo.png"),
+        ("wheel", "Assets/Brand/future-logo.WEBP"),
+        ("wheel", "examples/pixi-demo/docs/future-preview.webp"),
+        ("wheel", "./examples/pixi-demo/docs/future-preview.webp"),
+        ("wheel", "pixipix-0.1.0a5/examples/pixi-demo/docs/future-preview.webp"),
+        ("sdist", "assets/brand/future-brand-image.svg"),
+        ("sdist", "./assets/brand/pixipix-logo.png"),
+        ("sdist", "Assets/Brand/future-logo.WEBP"),
+        ("sdist", "examples/pixi-demo/docs/future-preview.webp"),
+        ("sdist", "./examples/pixi-demo/docs/future-preview.webp"),
+    ],
+)
+def test_distribution_inspection_rejects_repository_only_assets(
+    tmp_path: Path, artifact: str, path: str
+) -> None:
+    extra = {path: b"restricted\n"}
+    project, dist = _distributions(
+        tmp_path,
+        version="0.1.0a5",
+        wheel_extra=extra if artifact == "wheel" else None,
+        sdist_extra=extra if artifact == "sdist" else None,
+    )
+
+    with pytest.raises(ReleaseValidationError, match="restricted repository-only asset path"):
+        inspect_distributions(dist, project)
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "assets/brand/../palettes/allowed.json",
+        "assets\\brand\\pixipix-logo.png",
+    ],
+)
+def test_distribution_inspection_rejects_unsafe_non_posix_asset_paths(
+    tmp_path: Path, artifact: str, path: str
+) -> None:
+    extra = {path: b"unsafe\n"}
+    project, dist = _distributions(
+        tmp_path,
+        wheel_extra=extra if artifact == "wheel" else None,
+        sdist_extra=extra if artifact == "sdist" else None,
+    )
+
+    with pytest.raises(ReleaseValidationError, match="unsafe archive member path"):
+        inspect_distributions(dist, project)
+
+
+def test_asset_manifest_drives_build_exclusions_and_release_inspection(tmp_path: Path) -> None:
+    prefixes = load_restricted_distribution_prefixes(PROJECT_ROOT / "ASSET-LICENSES.md")
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    build_excludes = set(pyproject["tool"]["hatch"]["build"]["exclude"])
+
+    assert prefixes
+    assert "/assets" not in build_excludes
+    assert {f"/{prefix.removesuffix('/')}" for prefix in prefixes} <= build_excludes
+
+    for prefix in prefixes:
+        future_member = f"{prefix}nested/future-preview.webp"
+        for artifact in ("wheel", "sdist"):
+            extra = {future_member: b"restricted\n"}
+            case_root = tmp_path / f"{artifact}-{prefix.replace('/', '-')}"
+            case_root.mkdir()
+            project, dist = _distributions(
+                case_root,
+                wheel_extra=extra if artifact == "wheel" else None,
+                sdist_extra=extra if artifact == "sdist" else None,
+            )
+            with pytest.raises(
+                ReleaseValidationError, match="restricted repository-only asset path"
+            ):
+                inspect_distributions(dist, project)
+
+
+def test_distribution_inspection_requires_authoritative_asset_manifest(tmp_path: Path) -> None:
+    project, dist = _distributions(tmp_path)
+    sdist_path = dist / "pixipix-0.1.0.tar.gz"
+    replacement = tmp_path / "replacement.tar.gz"
+
+    with tarfile.open(sdist_path, "r:gz") as source, tarfile.open(replacement, "w:gz") as target:
+        for info in source.getmembers():
+            extracted = source.extractfile(info)
+            content = extracted.read() if extracted is not None else b""
+            if info.name.endswith("/ASSET-LICENSES.md"):
+                content = b"stale manifest\n"
+                info.size = len(content)
+            target.addfile(info, io.BytesIO(content))
+    replacement.replace(sdist_path)
+
+    with pytest.raises(ReleaseValidationError, match="packaged asset manifest"):
+        inspect_distributions(dist, project)
+
+
+def test_distribution_contract_keeps_legal_files_and_neutral_fixture() -> None:
+    assert {"ASSET-LICENSES.md", "LICENSE", "tests/fixtures/robot-geometric.png"} <= (
+        EXPECTED_SDIST_FILES
+    )
+
+
+def test_repository_checkout_keeps_complete_pixi_example_and_brand_assets() -> None:
+    expected = {
+        "assets/brand/pixipix-logo.png",
+        "assets/brand/pixipix-mascot-logo.png",
+        "examples/pixi-demo/README.md",
+        "examples/pixi-demo/pixi-demo-sheet.png",
+        "examples/pixi-demo/pixipix.toml",
+    }
+
+    assert all((PROJECT_ROOT / relative).is_file() for relative in expected)
 
 
 def test_distribution_inspection_requires_exact_counts(tmp_path: Path) -> None:

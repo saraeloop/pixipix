@@ -1,7 +1,7 @@
 # Pixi pipeline example
 
 <p align="center">
-  <img src="../../assets/pixipix-mascot-logo.png" alt="Pixi mascot and PixiPix wordmark" width="400">
+  <img src="../../assets/brand/pixipix-mascot-logo.png" alt="Pixi mascot and PixiPix wordmark" width="400">
 </p>
 
 ## Purpose
@@ -72,17 +72,11 @@ pipeline twice produces byte-identical output trees.
 `pixi-demo-sheet.png` is the official PixiPix mascot example asset, created for this
 repository and curated by saraeloop.
 
-The artwork is **not** licensed under the repository's
-[Apache License 2.0](../../LICENSE). That license applies to the PixiPix software and
-other materials explicitly distributed under it.
-
-This sheet is included solely so users can run the example pipeline locally. It may be
-copied and processed for that purpose. Generated example outputs may be created for
-local evaluation, but the source artwork and generated derivatives may not be
-redistributed, reused, modified for unrelated purposes, or incorporated into another
-project without permission.
-
-The PixiPix name, PixiPix logo, and Pixi mascot are PixiPix brand assets.
+The sheet, Pixi mascot, PixiPix logo, and generated example outputs are reserved brand
+assets. The complete example remains available in repository checkouts for local use and
+is excluded from wheels and source distributions. See the authoritative
+[asset rights and distribution manifest](../../ASSET-LICENSES.md) before copying,
+processing, or otherwise using these assets.
 
 Source integrity: the checked-in image is the supplied example artwork without
 modification or regeneration.
@@ -209,8 +203,8 @@ uv run pixipix align \
 
 Generated output belongs under the ignored `build/` directory and must not be committed.
 
-Generated frames contain the Pixi artwork and carry the same reserved rights as
-the source sheet: they are for local use and must not be redistributed.
+Generated frames contain the Pixi artwork and remain subject to the
+[authoritative asset rights statement](../../ASSET-LICENSES.md).
 
 ## What to look at afterward
 

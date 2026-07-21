@@ -49,12 +49,25 @@ out of the change.
 - Preserve explicit source-pixel and logical-pixel coordinate semantics.
 - Do not weaken input limits, path validation, output ownership checks, or atomic
   publication behavior without a documented security review.
-- Prefer tiny programmatically generated fixtures. Every committed visual fixture
-  must document its source or creator, license, redistribution and modification
-  permission, and intended automated-test use.
+- Prefer tiny programmatically generated test fixtures.
 - Do not modify or expose `docs-internal/` content.
 - Do not commit `dist/`, caches, virtual environments, or temporary extraction
   output.
+
+### Asset distribution policy
+
+- **Test fixtures** must be neutral and redistributable. Document their provenance,
+  permitted use, and distribution status; package them only when automated package or
+  distribution tests require them.
+- **Public examples** may use branded or rights-reserved material and do not need neutral
+  terminology. Rights-reserved example assets stay repository-only unless their asset
+  license explicitly permits package redistribution.
+- **Brand assets**, including Pixi, the PixiPix logo, and derivatives containing them,
+  are reserved repository content and must not enter wheels or source distributions.
+
+See [ASSET-LICENSES.md](ASSET-LICENSES.md) before adding or changing branded visuals.
+Every committed visual fixture or example asset must document its source or creator,
+permitted use, and whether it may be included in package distributions.
 
 Read [DEVELOPMENT.md](DEVELOPMENT.md) for the architecture map and detailed project
 conventions.

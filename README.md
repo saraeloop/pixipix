@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/saraeloop/pixipix/main/assets/pixipix-logo.png" alt="PixiPix logo" width="400">
+  <img src="https://raw.githubusercontent.com/saraeloop/pixipix/main/assets/brand/pixipix-logo.png" alt="PixiPix logo" width="400">
 </p>
 
 <p align="center">
