@@ -1,5 +1,9 @@
 # Pixi pipeline example
 
+<p align="center">
+  <img src="../../assets/pixipix-mascot-logo.png" alt="Pixi mascot and PixiPix wordmark" width="400">
+</p>
+
 ## Purpose
 
 Pixi is the official PixiPix mascot and the first official real-world pipeline
@@ -14,6 +18,54 @@ This example runs the complete current pipeline:
 ```text
 inspect → extract → scale → pixelize → align
 ```
+
+> **Preview images:** Source-sheet and aligned-output previews will be added soon. The
+> example is already runnable using the commands below.
+
+## What this example demonstrates
+
+The source sheet is one large PNG containing thirty differently sized Pixi poses
+drawn in a chunky pixel-art style, where each _apparent_ pixel is really a block
+of roughly 4×4 image pixels. The pipeline turns that one sheet into thirty
+clean, same-sized, true logical-pixel frames. Stage by stage:
+
+**`inspect` looks before anything is written.** It reports what PixiPix sees in
+the sheet: 31 disconnected regions of visible pixels ("components"), their
+sizes, and how they will be ordered. Nothing is guessed and nothing is
+produced — this is how you calibrate a config before committing to it.
+
+**`extract` cuts the sheet into frames.** Each connected region of visible
+pixels becomes one frame. Thirty regions are large enough to be accepted as
+poses; one — a small crescent moon floating above the sleeping pose — falls
+below the configured minimum area and is rejected. PixiPix follows pixels, not
+meaning: it cannot know the moon "belongs to" the sleeper, so the config
+decides. The thirty accepted frames are named in reading order, left to right,
+top to bottom.
+
+**`scale` shrinks everything with one shared ruler.** A single scale factor is
+computed from one reference pose and applied to every frame identically. Small
+poses stay small relative to big ones; the sheet's relative geometry is
+preserved under one shared factor, subject to deterministic integer rounding.
+PixiPix deliberately never normalizes frames individually —
+if two poses were drawn at different sizes, the output honestly keeps them at
+different sizes.
+
+**`pixelize` collapses fake pixels into real ones.** The art's 4×4 blocks each
+become exactly one logical RGBA pixel, chosen deterministically from the
+pixels in that cell. A pose that occupied ~180×190 image pixels becomes a true
+~45×48 pixel sprite. This is the step that converts enlarged pixel-style
+artwork into true logical-pixel output.
+
+**`align` puts every frame on the same stage.** Each logical frame is placed
+on an identical transparent 64×64 canvas, bottom-centered on a shared baseline
+four pixels above the canvas bottom — so every standing pose has its feet on
+the same floor. Four flying poses are explicitly nudged upward with configured
+offsets so bottom-alignment doesn't ground them. Pixels are copied exactly;
+alignment never resizes or recolors anything.
+
+The result is thirty deterministic 64×64 frames that downstream consumers can
+interchange without performing their own geometry repair. Running the same
+pipeline twice produces byte-identical output trees.
 
 ## Artwork provenance and usage
 
@@ -160,6 +212,24 @@ Generated output belongs under the ignored `build/` directory and must not be co
 Generated frames contain the Pixi artwork and carry the same reserved rights as
 the source sheet: they are for local use and must not be redistributed.
 
+## What to look at afterward
+
+After the final command:
+
+- Open `build/pixi-demo/aligned/frames/` and page through the thirty PNGs —
+  every frame is 64×64, every standing pose shares the same floor, and the
+  four flying poses hover above it.
+- Compare `pixi-stand-cube.png` with its source region: the same pose and
+  visual palette, converted into true logical pixels.
+- Open `build/pixi-demo/extracted/stage.json` and find the rejected component —
+  the crescent moon, listed with its area and rejection reason rather than
+  silently discarded.
+- Open `build/pixi-demo/aligned/stage.json` for each frame's recorded
+  placement: base position, offset, final position, and overflow (all zeros —
+  nothing clipped).
+- Run the pipeline a second time into a different output directory and diff
+  the two trees: every byte is identical.
+
 ## Expected result
 
 - Candidate components: 31.
@@ -167,11 +237,13 @@ the source sheet: they are for local use and must not be redistributed.
 - Rejected components: one detached crescent moon with area 1,339, rejected as
   `below-minimum-area`.
 - Extracted source-frame range: `132–222` pixels wide and `119–231` pixels high.
-- Shared scale factor: `0.8458149779735683`.
+- Shared scale factor: `0.8458149779735683` — one ratio applied to every
+  frame, preserving relative geometry without per-frame normalization.
 - Scaled frame range: `112–188` pixels wide and `101–195` pixels high.
-- Logical frame range: `28–47` pixels wide and `26–49` pixels high.
+- Logical frame range: `28–47` pixels wide and `26–49` pixels high — the
+  frames genuinely differ in size until alignment, by design.
 - Aligned output: 30 frames, each exactly `64×64`.
-- Baseline: `y = 60`.
+- Baseline: `y = 60` — a shared floor four pixels above the canvas bottom.
 - Explicit offsets: four, listed above.
 - Warnings: four expected `PX_ALIGN_OFFSET_001` warnings and no unexpected warnings.
 - Clipping findings: zero.

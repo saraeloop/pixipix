@@ -27,7 +27,7 @@ AI-generated raster inputs all work identically.
 
 ## Example
 
-Pixie, the official PixiPix mascot, demonstrates the complete current
+Pixi, the official PixiPix mascot, demonstrates the complete current
 pipeline on a real multi-frame raster source:
 
 ```text
