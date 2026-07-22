@@ -84,13 +84,13 @@ jobs:
           --direct-dir dist
           --rebuilt-dir "$RUNNER_TEMP/wheel-from-sdist"
 
-      - name: Smoke-test installed wheel
-        run: uv run --isolated --no-project --with dist/*.whl scripts/smoke_distribution.py
+      - name: Smoke-test installed direct wheel
+        run: uv run python scripts/smoke_distribution.py --artifact dist/*.whl
 
-      - name: Smoke-test installed source distribution
+      - name: Smoke-test installed wheel rebuilt from source distribution
         run: >-
-          uv run --isolated --no-project --with dist/*.tar.gz
-          scripts/smoke_distribution.py
+          uv run python scripts/smoke_distribution.py
+          --artifact "$RUNNER_TEMP"/wheel-from-sdist/*.whl
 
       - name: Upload verified distributions
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

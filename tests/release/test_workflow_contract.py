@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from scripts.smoke_distribution import SMOKE_STAGES
+
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "publish.yml"
 ACTION_REFERENCE = re.compile(
     r"(?m)^\s*uses:\s+(?P<action>[^@\s]+)@(?P<sha>[0-9a-f]{40})\s+#\s+(?P<version>v\S+)\s*$"
@@ -97,3 +99,11 @@ def test_pr_and_manual_runs_build_without_reaching_publish() -> None:
     assert "inspect-dist" in build
     assert "compare-wheels" in build
     assert build.count("scripts/smoke_distribution.py") == 2
+    assert build.count("--artifact") == 2
+    assert "--artifact dist/*.whl" in build
+    assert '--artifact "$RUNNER_TEMP"/wheel-from-sdist/*.whl' in build
+    assert "--with dist/*.tar.gz" not in build
+
+
+def test_distribution_smoke_uses_complete_structured_stage_contract() -> None:
+    assert SMOKE_STAGES == ("inspect", "extract", "scale", "pixelize", "align")

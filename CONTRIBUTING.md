@@ -69,9 +69,6 @@ See [ASSET-LICENSES.md](ASSET-LICENSES.md) before adding or changing branded vis
 Every committed visual fixture or example asset must document its source or creator,
 permitted use, and whether it may be included in package distributions.
 
-Read [DEVELOPMENT.md](DEVELOPMENT.md) for the architecture map and detailed project
-conventions.
-
 ## Verification
 
 Run the complete local gate before requesting review:
