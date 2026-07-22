@@ -513,9 +513,8 @@ Expected domain failures do not print tracebacks.
 
 ## Development
 
-See
-[DEVELOPMENT.md](https://github.com/saraeloop/pixipix/blob/main/DEVELOPMENT.md)
-for architecture, fixture provenance, and the full verification workflow.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor setup, project conventions,
+fixture requirements, and the full verification workflow.
 
 PixiPix is licensed under the
 [Apache License 2.0](https://github.com/saraeloop/pixipix/blob/main/LICENSE).

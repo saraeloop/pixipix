@@ -23,5 +23,19 @@ row_tolerance = 2
 [frames]
 names = ["idle", "signal"]
 
+[scale]
+mode = "explicit-factor"
+factor = 1.0
+
 [pixelize]
 source_cell_size = 4
+representative = "alpha-weighted-majority"
+alpha_policy = "binary"
+alpha_threshold = 128
+remainder_policy = "pad-transparent"
+
+[output]
+frame_width = 4
+frame_height = 4
+anchor = "center"
+clip_policy = "error"
