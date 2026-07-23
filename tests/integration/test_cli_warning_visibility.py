@@ -224,8 +224,9 @@ def test_write_command_help_includes_flag_and_inspect_excludes_it(tmp_path: Path
     )
     assert rejected.returncode == 2
     assert rejected.stdout == b""
-    assert b"show-warnings" in rejected.stderr
-    assert b"candidate components:" not in rejected.stderr
+    plain_error = _plain_help(rejected.stderr)
+    assert "show-warnings" in plain_error
+    assert "candidate components:" not in plain_error
 
 
 def test_scale_and_pixelize_default_warnings_match_calibrated_literals(tmp_path: Path) -> None:
