@@ -11,7 +11,7 @@ import typer
 from pixipix import __version__
 from pixipix.config import load_config
 from pixipix.errors import ExitCode, PixiPixError
-from pixipix.models import Component, InspectionResult
+from pixipix.models import Component, InspectionResult, ProcessingWarning
 from pixipix.stages.align import publish_align
 from pixipix.stages.extract import inspect_source, publish_extraction
 from pixipix.stages.pixelize import publish_pixelize
@@ -23,6 +23,8 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=False,
 )
+
+_SHOW_WARNINGS_HELP = "Show inherited warnings in addition to warnings created by this stage."
 
 
 @app.callback(invoke_without_command=True)
@@ -47,6 +49,27 @@ def _call[T](operation: Callable[[], T]) -> T:
             err=True,
         )
         raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR)) from None
+
+
+def _select_warnings(
+    warnings: tuple[ProcessingWarning, ...],
+    *,
+    command_stage: str,
+    show_warnings: bool,
+) -> tuple[ProcessingWarning, ...]:
+    if show_warnings:
+        return warnings
+    return tuple(warning for warning in warnings if warning.stage == command_stage)
+
+
+def _render_warnings(warnings: tuple[ProcessingWarning, ...]) -> None:
+    for warning in warnings:
+        typer.echo(
+            f"pixipix: warning [{warning.stage}] {warning.code}: {warning.message}",
+            err=True,
+            # Preserve stored warning text verbatim; Typer does not add styling here.
+            color=True,
+        )
 
 
 def _component_line(index: int, component: Component) -> str:
@@ -140,6 +163,9 @@ def extract_command(
     force: Annotated[
         bool, typer.Option("--force", help="Replace only verified PixiPix-owned output.")
     ] = False,
+    show_warnings: Annotated[
+        bool, typer.Option("--show-warnings", help=_SHOW_WARNINGS_HELP)
+    ] = False,
 ) -> None:
     """Extract ordered RGBA frames and versioned stage metadata."""
 
@@ -147,6 +173,9 @@ def extract_command(
         lambda: publish_extraction(input_path, load_config(config_path), output, force=force)
     )
     typer.echo(f"extracted {len(result.frames)} frame(s) to {output}")
+    _render_warnings(
+        _select_warnings(result.warnings, command_stage="extract", show_warnings=show_warnings)
+    )
 
 
 @app.command("scale")
@@ -157,11 +186,17 @@ def scale_command(
     force: Annotated[
         bool, typer.Option("--force", help="Replace only verified PixiPix-owned scale output.")
     ] = False,
+    show_warnings: Annotated[
+        bool, typer.Option("--show-warnings", help=_SHOW_WARNINGS_HELP)
+    ] = False,
 ) -> None:
     """Apply one deterministic global source-space scale transform."""
 
     result = _call(lambda: publish_scale(input_dir, load_config(config_path), output, force=force))
     typer.echo(f"scaled {len(result.frames)} frame(s) to {output}")
+    _render_warnings(
+        _select_warnings(result.warnings, command_stage="scale", show_warnings=show_warnings)
+    )
 
 
 @app.command("pixelize")
@@ -173,6 +208,9 @@ def pixelize_command(
         bool,
         typer.Option("--force", help="Replace only verified PixiPix-owned pixelize output."),
     ] = False,
+    show_warnings: Annotated[
+        bool, typer.Option("--show-warnings", help=_SHOW_WARNINGS_HELP)
+    ] = False,
 ) -> None:
     """Convert configured source cells into true logical RGBA pixels."""
 
@@ -180,6 +218,9 @@ def pixelize_command(
         lambda: publish_pixelize(input_dir, load_config(config_path), output, force=force)
     )
     typer.echo(f"pixelized {len(result.frames)} frame(s) to {output}")
+    _render_warnings(
+        _select_warnings(result.warnings, command_stage="pixelize", show_warnings=show_warnings)
+    )
 
 
 @app.command("align")
@@ -191,11 +232,17 @@ def align_command(
         bool,
         typer.Option("--force", help="Replace only verified PixiPix-owned align output."),
     ] = False,
+    show_warnings: Annotated[
+        bool, typer.Option("--show-warnings", help=_SHOW_WARNINGS_HELP)
+    ] = False,
 ) -> None:
     """Place logical RGBA frames on one deterministic fixed canvas."""
 
     result = _call(lambda: publish_align(input_dir, load_config(config_path), output, force=force))
     typer.echo(f"aligned {len(result.frames)} frame(s) to {output}")
+    _render_warnings(
+        _select_warnings(result.warnings, command_stage="align", show_warnings=show_warnings)
+    )
 
 
 def main() -> None:

@@ -281,6 +281,49 @@ def _validate_final_output(output: Path) -> None:
     print("final aligned metadata and PNG validation passed")
 
 
+def _validate_installed_warning_visibility(
+    *, console: Path, image: Path, config: Path, working_directory: Path
+) -> None:
+    warning_config = working_directory / "warning.toml"
+    warning_config.write_bytes(
+        config.read_bytes() + b"\n[frame_overrides.signal]\nscale_multiplier = 1.0\n"
+    )
+    output_root = working_directory / "warning-output"
+    extracted = output_root / "extracted"
+    scaled = output_root / "scaled"
+    extract_result = _run_setup(
+        [console, "extract", image, "--config", warning_config, "--output", extracted],
+        cwd=working_directory,
+    )
+    scale_result = _run_setup(
+        [console, "scale", extracted, "--config", warning_config, "--output", scaled],
+        cwd=working_directory,
+    )
+    expected_warning = (
+        'pixipix: warning [scale] PX_SCALE_OVERRIDE_001: frame "signal" uses explicit '
+        "scale multiplier 1.0; cross-frame consistency is user-managed\n"
+    )
+    if extract_result.stderr != "":
+        raise SmokeFailure("installed warning fixture extraction wrote unexpected stderr")
+    if scale_result.stdout != f"scaled 2 frame(s) to {scaled}\n":
+        raise SmokeFailure("installed warning fixture scale stdout does not match contract")
+    if scale_result.stderr != expected_warning:
+        raise SmokeFailure("installed warning fixture scale stderr does not match contract")
+    metadata = _load_json_object(scaled / "stage.json", "warning fixture scale metadata")
+    if metadata.get("warnings") != [
+        {
+            "code": "PX_SCALE_OVERRIDE_001",
+            "message": (
+                'frame "signal" uses explicit scale multiplier 1.0; '
+                "cross-frame consistency is user-managed"
+            ),
+            "stage": "scale",
+        }
+    ]:
+        raise SmokeFailure("installed warning fixture metadata does not match contract")
+    print("installed CLI warning visibility validation passed")
+
+
 def _stage_command(
     stage: SmokeStage,
     *,
@@ -350,6 +393,12 @@ def _run_installed_pipeline(
         else:
             _validate_stage_publication(stage, outputs[stage])
     _validate_final_output(outputs["align"])
+    _validate_installed_warning_visibility(
+        console=console,
+        image=image,
+        config=config,
+        working_directory=working_directory,
+    )
     print(f"distribution smoke test passed for pixipix {expected_version}")
     return 0
 
