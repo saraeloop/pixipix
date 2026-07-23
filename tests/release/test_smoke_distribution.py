@@ -199,6 +199,7 @@ def test_installed_artifact_runs_complete_pipeline(
     assert "installed module outside repository checkout: true" in result.stdout
     assert "installed production publication validation passed for align" in result.stdout
     assert "final aligned metadata and PNG validation passed" in result.stdout
+    assert "installed CLI warning visibility validation passed" in result.stdout
     assert "distribution smoke test passed for pixipix" in result.stdout
 
 

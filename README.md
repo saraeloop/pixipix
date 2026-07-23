@@ -164,7 +164,7 @@ Reports deterministic facts including:
 ### `pixipix extract`
 
 ```text
-pixipix extract INPUT --config CONFIG --output OUTPUT [--force]
+pixipix extract INPUT --config CONFIG --output OUTPUT [--force] [--show-warnings]
 ```
 
 Writes one RGBA PNG per accepted component plus versioned `stage.json` metadata. The
@@ -173,7 +173,7 @@ output is staged and validated before it is published.
 ### `pixipix scale`
 
 ```text
-pixipix scale INPUT_DIR --config CONFIG --output OUTPUT [--force]
+pixipix scale INPUT_DIR --config CONFIG --output OUTPUT [--force] [--show-warnings]
 ```
 
 Consumes a valid extraction-stage directory and applies one global scale factor to
@@ -186,7 +186,7 @@ normalizes transparent pixels to prevent dark fringes.
 ### `pixipix pixelize`
 
 ```text
-pixipix pixelize INPUT_DIR --config CONFIG --output OUTPUT [--force]
+pixipix pixelize INPUT_DIR --config CONFIG --output OUTPUT [--force] [--show-warnings]
 ```
 
 Consumes a valid scale-stage directory and emits one logical RGBA pixel per configured
@@ -197,13 +197,24 @@ palette-locked, or packed.
 ### `pixipix align`
 
 ```text
-pixipix align INPUT_DIR --config CONFIG --output OUTPUT [--force]
+pixipix align INPUT_DIR --config CONFIG --output OUTPUT [--force] [--show-warnings]
 ```
 
 Consumes valid pixelize-stage output and places every logical RGBA frame on the same
 configured transparent-black canvas. Alignment copies visible pixels exactly; it never
 resizes, resamples, recolors, or changes alpha. Placement, per-edge overflow, and visible
 source/destination rectangles are recorded in versioned metadata.
+
+### Warnings and automation
+
+Successful write-stage warnings are printed to stderr while the existing success message remains
+on stdout. By default, each command prints only warnings created by that stage; pass
+`--show-warnings` to include the complete inherited warning history in stored order.
+`stage.json` remains the structured source of truth for warning data.
+
+Warnings do not turn a successful command into a failure: exit code `0` remains the
+authoritative success signal. Scripts that treat any stderr output as failure may need
+adjustment.
 
 ### Other commands
 
