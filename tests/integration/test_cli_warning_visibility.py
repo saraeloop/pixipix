@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -68,6 +69,7 @@ ALIGN_OFFSET_STRUCTURED = {
     ),
     "stage": "align",
 }
+ANSI_ESCAPE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def _console() -> Path:
@@ -194,18 +196,22 @@ def _warnings(stage: Path) -> list[dict[str, str]]:
     return cast(list[dict[str, str]], metadata["warnings"])
 
 
+def _plain_help(stdout: bytes) -> str:
+    return ANSI_ESCAPE.sub(b"", stdout).decode()
+
+
 def test_write_command_help_includes_flag_and_inspect_excludes_it(tmp_path: Path) -> None:
     for command in ("extract", "scale", "pixelize", "align"):
         result = _run(tmp_path, command, "--help")
         assert result.returncode == 0
-        assert b"--show-warnings" in result.stdout
-        normalized_help = " ".join(result.stdout.decode().split())
+        normalized_help = " ".join(_plain_help(result.stdout).split())
+        assert "--show-warnings" in normalized_help
         assert "Show inherited warnings in addition to" in normalized_help
         assert "warnings created by this stage." in normalized_help
 
     inspect_help = _run(tmp_path, "inspect", "--help")
     assert inspect_help.returncode == 0
-    assert b"--show-warnings" not in inspect_help.stdout
+    assert "--show-warnings" not in _plain_help(inspect_help.stdout)
 
     _prepare(tmp_path / "project", _config())
     rejected = _run(
