@@ -1,20 +1,32 @@
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 import numpy as np
 import pytest
 
-from pixipix.config import Anchor, OutputConfig
+from pixipix.config import Anchor, OutputConfig, load_config
+from pixipix.errors import AlignmentClippingError, ResourcePolicyError
 from pixipix.models import AlignmentFrame, AlignmentRectangle
+from pixipix.resources import (
+    ResourceFinding,
+    ResourcePolicy,
+    ResourceProjection,
+    enforce_resource_policy,
+    resource_findings,
+)
 from pixipix.serialization import to_json_data
 from pixipix.stages.align import (
     EMPTY_RECTANGLE,
     calculate_alignment_frame,
     compose_aligned_canvas,
     mathematical_floor_center,
+    project_align_resources,
+    project_align_stage,
 )
+from pixipix.stages.io import validate_stage_input
+from tests.helpers import alignment_config, write_config, write_declared_pixelize_stage
 
 
 def _output(
@@ -236,3 +248,203 @@ def test_composition_copies_only_explicit_visible_region() -> None:
     frame = _frame(width=4, height=4, output=_output(width=3, height=3), dx=-1, dy=-1)
     canvas = compose_aligned_canvas(pixels, frame)
     assert np.array_equal(canvas, pixels[1:4, 1:4])
+
+
+@pytest.mark.parametrize(
+    ("config_text", "dimensions"),
+    [
+        (
+            alignment_config(
+                names=("frame-a",),
+                width=10,
+                height=8,
+                anchor="bottom-center",
+                baseline_y=6,
+                clip_policy="warn",
+            ),
+            (3, 2),
+        ),
+        (
+            alignment_config(
+                names=("frame-a",),
+                width=11,
+                height=10,
+                anchor="center",
+                clip_policy="warn",
+            ),
+            (4, 3),
+        ),
+        (
+            alignment_config(
+                names=("frame-a",),
+                width=10,
+                height=8,
+                anchor="top-left",
+                clip_policy="warn",
+                offsets="[frame_offsets.frame-a]\ndx = 2\ndy = -1",
+            ),
+            (4, 3),
+        ),
+        (
+            alignment_config(
+                names=("frame-a",),
+                width=10,
+                height=10,
+                anchor="center",
+                clip_policy="warn",
+            ),
+            (13, 11),
+        ),
+    ],
+    ids=["bottom-baseline", "center-odd", "declared-offset", "overflow"],
+)
+def test_alignment_stage_plan_stays_synchronized_with_placement_helper(
+    tmp_path: Path,
+    config_text: str,
+    dimensions: tuple[int, int],
+) -> None:
+    config_path = tmp_path / "project.toml"
+    write_config(config_path, config_text)
+    loaded = load_config(config_path)
+    pixelized = tmp_path / "pixelized"
+    write_declared_pixelize_stage(pixelized, loaded, (dimensions,))
+    validated = validate_stage_input(pixelized, "pixelize")
+
+    plan = project_align_stage(validated, loaded)
+    output = loaded.config.output
+    assert output is not None
+    offset = loaded.config.frame_offsets[0] if loaded.config.frame_offsets else None
+    expected = calculate_alignment_frame(
+        name="frame-a",
+        relative_path=PurePosixPath("frames/frame-a.png"),
+        source_order=0,
+        input_width=dimensions[0],
+        input_height=dimensions[1],
+        output=output,
+        dx=offset.dx if offset is not None else 0,
+        dy=offset.dy if offset is not None else 0,
+    )
+
+    assert plan.frames == (expected,)
+    assert (
+        plan.frames[0].final_x,
+        plan.frames[0].final_y,
+        plan.frames[0].left_overflow,
+        plan.frames[0].top_overflow,
+        plan.frames[0].right_overflow,
+        plan.frames[0].bottom_overflow,
+        plan.frames[0].visible_source_rectangle,
+        plan.frames[0].visible_destination_rectangle,
+    ) == (
+        expected.final_x,
+        expected.final_y,
+        expected.left_overflow,
+        expected.top_overflow,
+        expected.right_overflow,
+        expected.bottom_overflow,
+        expected.visible_source_rectangle,
+        expected.visible_destination_rectangle,
+    )
+
+
+def test_alignment_clipping_policy_precedes_or_reaches_resource_enforcement(
+    tmp_path: Path,
+) -> None:
+    plans = {}
+    for policy in ("error", "warn"):
+        root = tmp_path / policy
+        root.mkdir()
+        config_path = root / "project.toml"
+        write_config(
+            config_path,
+            alignment_config(
+                names=("frame-a",),
+                width=1,
+                height=1,
+                anchor="center",
+                clip_policy=policy,
+            )
+            + "\n[resources]\nmax_aggregate_input_pixels = 1\n",
+        )
+        loaded = load_config(config_path)
+        pixelized = root / "pixelized"
+        write_declared_pixelize_stage(pixelized, loaded, ((10, 10),))
+        validated = validate_stage_input(pixelized, "pixelize")
+        if policy == "error":
+            with pytest.raises(AlignmentClippingError):
+                project_align_stage(validated, loaded)
+        else:
+            plans[policy] = (project_align_stage(validated, loaded), loaded)
+
+    warn_plan, warn_loaded = plans["warn"]
+    assert len(warn_plan.clipping_findings) == 1
+    assert warn_plan.clipping_findings[0].frame_name == "frame-a"
+    with pytest.raises(ResourcePolicyError):
+        enforce_resource_policy(
+            warn_plan.projection,
+            warn_loaded.config.resources,
+        )
+
+
+def test_align_modeled_byte_boundary_admits_equality_and_refuses_plus_one() -> None:
+    equality_output = _output(width=4000, height=4000)
+    equality_frames = tuple(
+        calculate_alignment_frame(
+            name=f"frame-{index}",
+            relative_path=PurePosixPath(f"frames/frame-{index}.png"),
+            source_order=index,
+            input_width=2500,
+            input_height=2800,
+            output=equality_output,
+            dx=0,
+            dy=0,
+        )
+        for index in range(10)
+    )
+    plus_one_output = _output(width=13, height=1_230_769)
+    plus_one_sizes = ((2800, 2700),) * 9 + ((1319, 1486),)
+    plus_one_frames = tuple(
+        calculate_alignment_frame(
+            name=f"frame-{index}",
+            relative_path=PurePosixPath(f"frames/frame-{index}.png"),
+            source_order=index,
+            input_width=width,
+            input_height=height,
+            output=plus_one_output,
+            dx=0,
+            dy=0,
+        )
+        for index, (width, height) in enumerate(plus_one_sizes)
+    )
+    policy = ResourcePolicy(
+        max_aggregate_input_pixels=150_000_000,
+        max_aggregate_output_pixels=160_000_000,
+        max_modeled_peak_live_bytes=1_000_000_000,
+    )
+
+    equality = project_align_resources(equality_frames, 4000, 4000)
+    plus_one = project_align_resources(plus_one_frames, 13, 1_230_769)
+
+    assert equality == ResourceProjection(
+        "align",
+        70_000_000,
+        160_000_000,
+        1_000_000_000,
+    )
+    assert resource_findings(equality, policy) == ()
+    enforce_resource_policy(equality, policy)
+    assert plus_one == ResourceProjection(
+        "align",
+        70_000_034,
+        159_999_970,
+        1_000_000_001,
+    )
+    assert resource_findings(plus_one, policy) == (
+        ResourceFinding(
+            "modeled_peak_live_bytes",
+            1_000_000_001,
+            1_000_000_000,
+        ),
+    )
+    with pytest.raises(ResourcePolicyError):
+        enforce_resource_policy(plus_one, policy)

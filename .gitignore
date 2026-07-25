@@ -12,3 +12,4 @@ build/
 .DS_Store
 *.pixipix-backup-*
 *.pixipix-build-*
+AGENTS.md

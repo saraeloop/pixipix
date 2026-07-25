@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import cast
 
 import numpy as np
+import pytest
 
 from tests.helpers import write_config, write_rgba
 
@@ -44,6 +45,12 @@ FAILURE = (
     b"PX_ALIGN_CLIP_001 [align] alignment clips 2 frame(s): idle: left=1, top=1, "
     b"right=0, bottom=1; signal: left=1, top=1, right=0, bottom=1. Remediation: "
     b"increase the canvas, adjust explicit offsets, or choose warn/allow\n"
+)
+RESOURCE_FAILURE = (
+    b"PX_RESOURCE_001 [align] aggregate resource policy exceeded: aggregate output "
+    b"pixels 512/200. Remediation: reduce frame count or dimensions, adjust "
+    b"transformation or canvas settings, or raise the configured budget within its "
+    b"allowed cap when the execution environment can support it\n"
 )
 SCALE_STRUCTURED = {
     "code": "PX_SCALE_OVERRIDE_001",
@@ -449,3 +456,38 @@ def test_alignment_failure_prints_no_warning_lines_or_output(tmp_path: Path) -> 
         assert result.stderr == FAILURE
         assert b"pixipix: warning" not in result.stderr
         assert not (tmp_path / output).exists()
+
+
+@pytest.mark.parametrize("show_warnings", [False, True], ids=["default", "show-warnings"])
+def test_resource_refusal_precedes_warning_rendering(
+    tmp_path: Path,
+    show_warnings: bool,
+) -> None:
+    config = (
+        _config(frame_width=16, frame_height=16)
+        + "\n[resources]\nmax_aggregate_output_pixels = 200\n"
+    )
+    _run_to_pixelize(tmp_path, config)
+    assert [warning["code"] for warning in _warnings(tmp_path / "pixelized")] == [
+        "PX_SCALE_OVERRIDE_001",
+        "PX_PIXELIZE_CROP_001",
+        "PX_PIXELIZE_CROP_001",
+    ]
+    arguments = [
+        "align",
+        "pixelized",
+        "--config",
+        "scenario.toml",
+        "--output",
+        "aligned",
+    ]
+    if show_warnings:
+        arguments.append("--show-warnings")
+
+    result = _run(tmp_path, *arguments)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr == RESOURCE_FAILURE
+    assert b"pixipix: warning" not in result.stderr
+    assert not (tmp_path / "aligned").exists()

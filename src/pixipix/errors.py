@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pixipix.models import AlignmentClippingFinding
+    from pixipix.resources import ResourceFindings, ResourcePolicy, ResourceProjection
 
 
 class ExitCode(IntEnum):
@@ -96,6 +97,42 @@ class ProcessingError(PixiPixError):
             path=path,
             frame=frame,
             remediation=remediation,
+        )
+
+
+class ResourcePolicyError(ProcessingError):
+    """Typed aggregate failure for deterministic resource-policy findings."""
+
+    projection: ResourceProjection
+    policy: ResourcePolicy
+    findings: ResourceFindings
+
+    def __init__(
+        self,
+        projection: ResourceProjection,
+        policy: ResourcePolicy,
+        findings: ResourceFindings,
+    ) -> None:
+        object.__setattr__(self, "projection", projection)
+        object.__setattr__(self, "policy", policy)
+        object.__setattr__(self, "findings", findings)
+        labels = {
+            "aggregate_input_pixels": "aggregate input pixels",
+            "aggregate_output_pixels": "aggregate output pixels",
+            "modeled_peak_live_bytes": ("modeled peak live bytes under the explicit-buffer model"),
+        }
+        summary = "; ".join(
+            f"{labels[item.kind]} {item.computed}/{item.limit}" for item in findings
+        )
+        super().__init__(
+            "PX_RESOURCE_001",
+            projection.stage,
+            f"aggregate resource policy exceeded: {summary}",
+            remediation=(
+                "reduce frame count or dimensions, adjust transformation or canvas settings, "
+                "or raise the configured budget within its allowed cap when the execution "
+                "environment can support it"
+            ),
         )
 
 

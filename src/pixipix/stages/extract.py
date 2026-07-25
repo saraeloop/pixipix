@@ -35,6 +35,7 @@ from pixipix.models import (
     SourceImage,
     StageMetadata,
 )
+from pixipix.resources import ResourceProjection, enforce_resource_policy
 from pixipix.serialization import to_json_data, write_json
 
 LabelMap = npt.NDArray[np.int32]
@@ -224,6 +225,77 @@ def _padded_bounds(bounds: Rect, padding: int, width: int, height: int) -> Rect:
     )
 
 
+def project_extract_resources(
+    source_area: int,
+    frames: tuple[ExtractedFrame, ...],
+) -> ResourceProjection:
+    """Project the locked extract explicit-buffer formula."""
+
+    frame_areas = tuple(frame.padded_bounds.width * frame.padded_bounds.height for frame in frames)
+    aggregate_output = sum(frame_areas)
+    largest_frame = max(frame_areas, default=0)
+    materialization = 9 * source_area + 4 * aggregate_output + largest_frame
+    publication = 4 * aggregate_output + 5 * largest_frame
+    return ResourceProjection(
+        "extract",
+        source_area,
+        aggregate_output,
+        max(materialization, publication),
+    )
+
+
+def project_extracted_frames(
+    analysis: _Analysis,
+    loaded: LoadedConfig,
+) -> tuple[ExtractedFrame, ...]:
+    """Project every padded/clipped frame without materializing a crop."""
+
+    config = loaded.config
+    height, width = analysis.mask.shape
+    return tuple(
+        ExtractedFrame(
+            name=name,
+            relative_path=PurePosixPath("frames") / filename,
+            source_order=source_order,
+            discovery_index=component.discovery_index,
+            component_area=component.area,
+            original_bounds=component.bounds,
+            padded_bounds=_padded_bounds(
+                component.bounds,
+                config.extract.padding,
+                width,
+                height,
+            ),
+        )
+        for source_order, (component, name, filename) in enumerate(
+            zip(
+                analysis.ordered,
+                config.frames.names,
+                config.frames.filenames,
+                strict=True,
+            )
+        )
+    )
+
+
+def _materialize_frame_crop(
+    analysis: _Analysis,
+    component: Component,
+    frame: ExtractedFrame,
+) -> FrameImage:
+    padded = frame.padded_bounds
+    crop = np.array(
+        analysis.source.pixels[padded.top : padded.bottom, padded.left : padded.right],
+        dtype=np.uint8,
+        copy=True,
+    )
+    label_crop = analysis.component_map.labels[
+        padded.top : padded.bottom, padded.left : padded.right
+    ]
+    crop[label_crop != component.discovery_index + 1] = 0
+    return FrameImage(frame, crop)
+
+
 def extract_source(input_path: Path, loaded: LoadedConfig) -> ExtractionRun:
     analysis = _analyze(input_path, loaded)
     config = loaded.config
@@ -247,33 +319,14 @@ def extract_source(input_path: Path, loaded: LoadedConfig) -> ExtractionRun:
             remediation="inspect component bounds and update thresholds or frame names",
         )
 
-    metadata: list[ExtractedFrame] = []
-    images: list[FrameImage] = []
     height, width = analysis.mask.shape
-    for source_order, (component, name, filename) in enumerate(
-        zip(analysis.ordered, config.frames.names, config.frames.filenames, strict=True)
-    ):
-        padded = _padded_bounds(component.bounds, config.extract.padding, width, height)
-        crop = np.array(
-            analysis.source.pixels[padded.top : padded.bottom, padded.left : padded.right],
-            dtype=np.uint8,
-            copy=True,
-        )
-        label_crop = analysis.component_map.labels[
-            padded.top : padded.bottom, padded.left : padded.right
-        ]
-        crop[label_crop != component.discovery_index + 1] = 0
-        frame = ExtractedFrame(
-            name=name,
-            relative_path=PurePosixPath("frames") / filename,
-            source_order=source_order,
-            discovery_index=component.discovery_index,
-            component_area=component.area,
-            original_bounds=component.bounds,
-            padded_bounds=padded,
-        )
-        metadata.append(frame)
-        images.append(FrameImage(frame, crop))
+    frames = project_extracted_frames(analysis, loaded)
+    projection = project_extract_resources(width * height, frames)
+    enforce_resource_policy(projection, config.resources)
+    images = tuple(
+        _materialize_frame_crop(analysis, component, frame)
+        for component, frame in zip(analysis.ordered, frames, strict=True)
+    )
     result = ExtractionResult(
         source=analysis.source.metadata,
         background=analysis.background,
@@ -281,9 +334,9 @@ def extract_source(input_path: Path, loaded: LoadedConfig) -> ExtractionRun:
         accepted=analysis.accepted,
         rejected=analysis.rejected,
         ordered=analysis.ordered,
-        frames=tuple(metadata),
+        frames=frames,
     )
-    return ExtractionRun(result=result, frame_images=tuple(images))
+    return ExtractionRun(result=result, frame_images=images)
 
 
 def _stage_metadata(run: ExtractionRun, loaded: LoadedConfig) -> StageMetadata:

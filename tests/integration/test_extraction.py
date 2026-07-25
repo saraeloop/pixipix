@@ -11,7 +11,7 @@ import pytest
 from PIL import Image
 
 from pixipix.config import load_config
-from pixipix.errors import ProcessingError
+from pixipix.errors import ProcessingError, ResourcePolicyError
 from pixipix.models import StageMetadata
 from pixipix.stages import extract as extract_stage
 from pixipix.stages.extract import inspect_source, publish_extraction
@@ -281,6 +281,80 @@ def test_symlink_output_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ProcessingError, match="PX_OUTPUT_004"):
         publish_extraction(image, load_config(config), output, force=True)
+
+
+def test_extract_resource_checkpoint_precedes_crop_and_preserves_owned_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture_root = Path(__file__).parents[1] / "fixtures"
+    image = fixture_root / "robot-geometric.png"
+    fixture_config = fixture_root / "robot-geometric.toml"
+    admitted_config = tmp_path / "admitted.toml"
+    refused_config = tmp_path / "refused.toml"
+    output = tmp_path / "owned"
+    admitted_config.write_bytes(fixture_config.read_bytes())
+    refused_config.write_text(
+        fixture_config.read_text(encoding="utf-8")
+        + "\n[resources]\nmax_aggregate_output_pixels = 169\n",
+        encoding="utf-8",
+    )
+    publish_extraction(image, load_config(admitted_config), output)
+    original = _artifact_bytes(output)
+
+    def fail_crop(_analysis: object, _component: object, _frame: object) -> None:
+        raise AssertionError("frame crop must not materialize before resource admission")
+
+    monkeypatch.setattr(extract_stage, "_materialize_frame_crop", fail_crop)
+    with pytest.raises(ResourcePolicyError) as raised:
+        publish_extraction(image, load_config(refused_config), output, force=True)
+
+    projection = raised.value.projection
+    assert raised.value.policy == load_config(refused_config).config.resources
+    assert (
+        projection.aggregate_input_pixels,
+        projection.aggregate_output_pixels,
+        projection.modeled_peak_live_bytes,
+    ) == (240, 170, 2_930)
+    assert tuple(finding.kind for finding in raised.value.findings) == ("aggregate_output_pixels",)
+    assert capsys.readouterr() == ("", "")
+    assert _artifact_bytes(output) == original
+    assert list(tmp_path.glob(".owned.pixipix-build-*")) == []
+
+
+def test_different_admitting_resource_policies_preserve_extraction_results_and_pngs(
+    tmp_path: Path,
+) -> None:
+    image, default_config = _project(tmp_path)
+    raised_config = tmp_path / "raised.toml"
+    write_config(
+        raised_config,
+        extraction_config() + "\n[resources]\nmax_aggregate_output_pixels = 60000001\n",
+    )
+    default_loaded = load_config(default_config)
+    raised_loaded = load_config(raised_config)
+    default_output = tmp_path / "default-output"
+    raised_output = tmp_path / "raised-output"
+
+    default_result = publish_extraction(image, default_loaded, default_output)
+    raised_result = publish_extraction(image, raised_loaded, raised_output)
+
+    assert default_loaded.effective_config_sha256 != raised_loaded.effective_config_sha256
+    assert default_result == raised_result
+    assert {path.name: path.read_bytes() for path in (default_output / "frames").iterdir()} == {
+        path.name: path.read_bytes() for path in (raised_output / "frames").iterdir()
+    }
+    default_stage_bytes = (default_output / "stage.json").read_bytes()
+    raised_stage_bytes = (raised_output / "stage.json").read_bytes()
+    assert default_stage_bytes != raised_stage_bytes
+    default_stage = json.loads(default_stage_bytes)
+    raised_stage = json.loads(raised_stage_bytes)
+    assert default_stage.pop("sourceConfigSha256") == default_loaded.source_config_sha256
+    assert raised_stage.pop("sourceConfigSha256") == raised_loaded.source_config_sha256
+    assert default_stage.pop("effectiveConfigSha256") == default_loaded.effective_config_sha256
+    assert raised_stage.pop("effectiveConfigSha256") == raised_loaded.effective_config_sha256
+    assert default_stage == raised_stage
 
 
 def test_symlink_parent_and_dangerous_repository_root_are_rejected(tmp_path: Path) -> None:

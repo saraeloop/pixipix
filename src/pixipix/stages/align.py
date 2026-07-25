@@ -18,11 +18,15 @@ from pixipix.models import (
     ProcessingWarning,
     UInt8Image,
 )
+from pixipix.resources import ResourceProjection, enforce_resource_policy
 from pixipix.stages.io import (
     LoadedStageInput,
     OutputFrameImage,
-    load_stage_input,
+    ValidatedStageInput,
+    decode_stage_input,
     publish_stage_output,
+    validate_stage_input,
+    validate_stage_output_target,
 )
 
 EMPTY_RECTANGLE = AlignmentRectangle(0, 0, 0, 0)
@@ -32,6 +36,14 @@ EMPTY_RECTANGLE = AlignmentRectangle(0, 0, 0, 0)
 class AlignmentRun:
     metadata: AlignmentStageMetadata
     frame_images: tuple[OutputFrameImage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentStagePlan:
+    frames: tuple[AlignmentFrame, ...]
+    clipping_findings: tuple[AlignmentClippingFinding, ...]
+    warnings: tuple[ProcessingWarning, ...]
+    projection: ResourceProjection
 
 
 def mathematical_floor_center(canvas_size: int, input_size: int) -> int:
@@ -181,7 +193,10 @@ def _require_output_config(loaded: LoadedConfig) -> OutputConfig:
     return output
 
 
-def _validate_config_handoff(stage: LoadedStageInput, loaded: LoadedConfig) -> None:
+def _validate_config_handoff(
+    stage: ValidatedStageInput | LoadedStageInput,
+    loaded: LoadedConfig,
+) -> None:
     if stage.identity.effective_config_sha256 != loaded.effective_config_sha256:
         raise ConfigurationError(
             "PX_ALIGN_CONFIG_009",
@@ -202,8 +217,29 @@ def _validate_config_handoff(stage: LoadedStageInput, loaded: LoadedConfig) -> N
         )
 
 
-def align_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> AlignmentRun:
-    """Align all validated pixelize frames in prior-stage metadata order."""
+def project_align_resources(
+    frames: tuple[AlignmentFrame, ...],
+    canvas_width: int,
+    canvas_height: int,
+) -> ResourceProjection:
+    """Project the locked align explicit-buffer formula."""
+
+    aggregate_input = sum(frame.input_width * frame.input_height for frame in frames)
+    canvas_area = canvas_width * canvas_height
+    aggregate_output = len(frames) * canvas_area
+    return ResourceProjection(
+        "align",
+        aggregate_input,
+        aggregate_output,
+        4 * aggregate_input + 4 * aggregate_output + 5 * canvas_area,
+    )
+
+
+def project_align_stage(
+    stage: ValidatedStageInput,
+    loaded: LoadedConfig,
+) -> AlignmentStagePlan:
+    """Project placements, warnings, and resources without decoding pixels."""
 
     output = _require_output_config(loaded)
     _validate_config_handoff(stage, loaded)
@@ -250,12 +286,32 @@ def align_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> AlignmentRun:
             )
             for item in findings
         )
+    return AlignmentStagePlan(
+        metadata_frames,
+        findings,
+        tuple(warnings),
+        project_align_resources(
+            metadata_frames,
+            output.frame_width,
+            output.frame_height,
+        ),
+    )
+
+
+def align_stage(
+    stage: LoadedStageInput,
+    loaded: LoadedConfig,
+    plan: AlignmentStagePlan,
+) -> AlignmentRun:
+    """Execute one admitted alignment plan without recomputing placement."""
+
+    output = _require_output_config(loaded)
     frame_images = tuple(
         OutputFrameImage(
             source.relative_path,
             compose_aligned_canvas(source.pixels, metadata_frame),
         )
-        for source, metadata_frame in zip(stage.frames, metadata_frames, strict=True)
+        for source, metadata_frame in zip(stage.frames, plan.frames, strict=True)
     )
     metadata = AlignmentStageMetadata(
         schema_version=1,
@@ -271,9 +327,9 @@ def align_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> AlignmentRun:
         configured_baseline_y=output.baseline_y,
         effective_baseline_y=output.effective_baseline_y,
         clipping_policy=output.clip_policy,
-        clipping_findings=findings,
-        frames=metadata_frames,
-        warnings=tuple(warnings),
+        clipping_findings=plan.clipping_findings,
+        frames=plan.frames,
+        warnings=plan.warnings,
     )
     return AlignmentRun(metadata, frame_images)
 
@@ -281,7 +337,11 @@ def align_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> AlignmentRun:
 def publish_align(
     input_dir: Path, loaded: LoadedConfig, output: Path, *, force: bool = False
 ) -> AlignmentStageMetadata:
-    stage = load_stage_input(input_dir, "pixelize")
-    run = align_stage(stage, loaded)
+    validate_stage_output_target(output, "align", force=force)
+    validated = validate_stage_input(input_dir, "pixelize")
+    plan = project_align_stage(validated, loaded)
+    enforce_resource_policy(plan.projection, loaded.config.resources)
+    stage = decode_stage_input(validated)
+    run = align_stage(stage, loaded, plan)
     publish_stage_output(output, "align", run.metadata, run.frame_images, force=force)
     return run.metadata

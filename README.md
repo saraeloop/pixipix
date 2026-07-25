@@ -70,6 +70,11 @@ Create `pixipix.toml`:
 name = "sprite-source"
 strict = true
 
+[resources]
+max_aggregate_input_pixels = 50000000
+max_aggregate_output_pixels = 60000000
+max_modeled_peak_live_bytes = 1000000000
+
 [source]
 format = "png"
 expected_components = 2
@@ -228,6 +233,45 @@ python -m pixipix
 
 PixiPix parses TOML strictly. Unknown keys, unsupported sections, invalid values,
 duplicate names, unsafe filenames, and inconsistent counts are configuration errors.
+
+### Aggregate resource policy
+
+```toml
+[resources]
+max_aggregate_input_pixels = 50000000
+max_aggregate_output_pixels = 60000000
+max_modeled_peak_live_bytes = 1000000000
+```
+
+These are the defaults. Each value must be a positive integer. The fixed absolute caps
+are:
+
+| Key | Default | Absolute cap |
+| --- | ---: | ---: |
+| `max_aggregate_input_pixels` | 50,000,000 | 150,000,000 |
+| `max_aggregate_output_pixels` | 60,000,000 | 160,000,000 |
+| `max_modeled_peak_live_bytes` | 1,000,000,000 | 2,000,000,000 |
+
+The exact cap is accepted; cap plus one is rejected as invalid configuration. Budgets
+may be lowered for more constrained execution environments or raised within the caps
+when the environment can support the workload. Raising a budget does not guarantee
+safety or success on a particular host.
+
+For each write stage, aggregate input and output pixels are the sums across all frames.
+Modeled peak live bytes is a deterministic projection under PixiPix's explicit-buffer
+model. It is not total process RSS, does not include every allocator or library
+overhead, and actual process memory may be higher.
+
+Individual-image guards and aggregate guards are independent. The 16,777,216-pixel
+individual-image ceiling is a defensive limit, not a promise that every image at that
+size is supported on every host. A valid workload that exceeds an aggregate budget
+fails as a processing error with exit code `1`. An invalid `[resources]` configuration
+fails with exit code `2`. Resource refusal publishes nothing and does not mutate an
+existing output.
+
+Resolved resource defaults and explicit values participate in effective configuration
+identity. Run every stage in a lineage with one consistent resource policy; if policies
+differ, regenerate the mixed-policy lineage with the same configuration throughout.
 
 ### Source limits
 

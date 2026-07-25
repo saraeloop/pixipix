@@ -17,6 +17,7 @@ from pixipix.errors import (
     ConfigurationError,
     ExitCode,
     ProcessingError,
+    ResourcePolicyError,
     UnsupportedInputError,
 )
 from pixipix.stages.align import publish_align
@@ -28,6 +29,7 @@ from tests.helpers import (
     pipeline_config,
     transparent_sheet,
     write_config,
+    write_declared_pixelize_stage,
     write_rgba,
 )
 
@@ -545,3 +547,34 @@ def test_align_cli_help_and_expected_failures_have_stable_exits(tmp_path: Path) 
     assert "PX_ALIGN_CLIP_001" in clipping.stderr
     assert "idle" in clipping.stderr and "signal" in clipping.stderr
     assert "Traceback" not in clipping.stderr
+
+
+def test_warning_only_clipping_reaches_resource_refusal_before_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = tmp_path / "project.toml"
+    write_config(
+        config,
+        alignment_config(width=1, height=1, clip_policy="warn")
+        + "\n[resources]\nmax_aggregate_input_pixels = 1\n",
+    )
+    loaded = load_config(config)
+    pixelized = tmp_path / "pixelized"
+    output = tmp_path / "aligned"
+    write_declared_pixelize_stage(pixelized, loaded, ((10, 10), (10, 10)))
+
+    def fail_decode(_validated: object) -> None:
+        raise AssertionError("decoder must not run for a resource refusal")
+
+    monkeypatch.setattr("pixipix.stages.align.decode_stage_input", fail_decode)
+    with pytest.raises(ResourcePolicyError) as raised:
+        publish_align(pixelized, loaded, output)
+
+    assert raised.value.projection.stage == "align"
+    assert raised.value.policy == loaded.config.resources
+    assert raised.value.projection.aggregate_input_pixels == 200
+    assert tuple(finding.kind for finding in raised.value.findings) == ("aggregate_input_pixels",)
+    assert capsys.readouterr() == ("", "")
+    assert not output.exists()

@@ -12,6 +12,15 @@ from pathlib import Path
 from typing import Literal, cast, get_args
 
 from pixipix.errors import ConfigurationError
+from pixipix.resources import (
+    DEFAULT_MAX_AGGREGATE_INPUT_PIXELS,
+    DEFAULT_MAX_AGGREGATE_OUTPUT_PIXELS,
+    DEFAULT_MAX_MODELED_PEAK_LIVE_BYTES,
+    MAX_AGGREGATE_INPUT_PIXELS_CAP,
+    MAX_AGGREGATE_OUTPUT_PIXELS_CAP,
+    MAX_MODELED_PEAK_LIVE_BYTES_CAP,
+    ResourcePolicy,
+)
 from pixipix.serialization import canonical_json_bytes
 
 type RgbaColor = str
@@ -129,6 +138,7 @@ class FrameOffset:
 @dataclass(frozen=True, slots=True)
 class PixiPixConfig:
     project: ProjectConfig
+    resources: ResourcePolicy
     source: SourceConfig
     background: BackgroundConfig
     extract: ExtractConfig
@@ -190,6 +200,66 @@ def _boolean(table: dict[str, object], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise ConfigurationError("PX_CONFIG_006", f'"{key}" must be a boolean')
     return value
+
+
+def _resource_integer(
+    table: dict[str, object],
+    key: str,
+    default: int,
+    cap: int,
+) -> int:
+    value = table.get(key, default)
+    dotted = f"resources.{key}"
+    remediation = f"use a positive integer no greater than {cap}"
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigurationError(
+            "PX_CONFIG_035",
+            f'"{dotted}" must be an integer',
+            remediation=remediation,
+        )
+    if value <= 0:
+        raise ConfigurationError(
+            "PX_CONFIG_036",
+            f'"{dotted}" must be greater than zero',
+            remediation=remediation,
+        )
+    if value > cap:
+        raise ConfigurationError(
+            "PX_CONFIG_037",
+            f'"{dotted}" value {value} exceeds the maximum allowed value {cap}',
+            remediation=remediation,
+        )
+    return value
+
+
+def _parse_resources(root: dict[str, object]) -> ResourcePolicy:
+    table = _table(root.get("resources", {}), "resources")
+    allowed = {
+        "max_aggregate_input_pixels",
+        "max_aggregate_output_pixels",
+        "max_modeled_peak_live_bytes",
+    }
+    _reject_unknown(table, allowed, "resources")
+    return ResourcePolicy(
+        max_aggregate_input_pixels=_resource_integer(
+            table,
+            "max_aggregate_input_pixels",
+            DEFAULT_MAX_AGGREGATE_INPUT_PIXELS,
+            MAX_AGGREGATE_INPUT_PIXELS_CAP,
+        ),
+        max_aggregate_output_pixels=_resource_integer(
+            table,
+            "max_aggregate_output_pixels",
+            DEFAULT_MAX_AGGREGATE_OUTPUT_PIXELS,
+            MAX_AGGREGATE_OUTPUT_PIXELS_CAP,
+        ),
+        max_modeled_peak_live_bytes=_resource_integer(
+            table,
+            "max_modeled_peak_live_bytes",
+            DEFAULT_MAX_MODELED_PEAK_LIVE_BYTES,
+            MAX_MODELED_PEAK_LIVE_BYTES_CAP,
+        ),
+    )
 
 
 def _string(table: dict[str, object], key: str, default: str | None) -> str | None:
@@ -638,6 +708,7 @@ def load_config(path: Path) -> LoadedConfig:
         root,
         {
             "project",
+            "resources",
             "source",
             "background",
             "extract",
@@ -660,6 +731,7 @@ def load_config(path: Path) -> LoadedConfig:
         )
     config = PixiPixConfig(
         project=_parse_project(root),
+        resources=_parse_resources(root),
         source=_parse_source(root),
         background=_parse_background(root),
         extract=_parse_extract(root),
