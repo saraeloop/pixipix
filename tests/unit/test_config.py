@@ -7,6 +7,15 @@ import pytest
 
 from pixipix.config import MAX_SOURCE_PIXELS, load_config
 from pixipix.errors import ConfigurationError
+from pixipix.resources import (
+    DEFAULT_MAX_AGGREGATE_INPUT_PIXELS,
+    DEFAULT_MAX_AGGREGATE_OUTPUT_PIXELS,
+    DEFAULT_MAX_MODELED_PEAK_LIVE_BYTES,
+    MAX_AGGREGATE_INPUT_PIXELS_CAP,
+    MAX_AGGREGATE_OUTPUT_PIXELS_CAP,
+    MAX_MODELED_PEAK_LIVE_BYTES_CAP,
+    ResourcePolicy,
+)
 from tests.helpers import extraction_config, write_config
 
 
@@ -159,3 +168,210 @@ def test_negative_zero_has_one_canonical_numeric_representation(tmp_path: Path) 
     )
 
     assert load_config(first).effective_config_sha256 == load_config(second).effective_config_sha256
+
+
+def test_resource_defaults_and_explicit_defaults_have_one_effective_identity(
+    tmp_path: Path,
+) -> None:
+    omitted = tmp_path / "omitted.toml"
+    explicit = tmp_path / "explicit.toml"
+    write_config(omitted)
+    write_config(
+        explicit,
+        extraction_config()
+        + (
+            "\n[resources]\n"
+            "max_aggregate_input_pixels = 50000000\n"
+            "max_aggregate_output_pixels = 60000000\n"
+            "max_modeled_peak_live_bytes = 1000000000\n"
+        ),
+    )
+
+    omitted_loaded = load_config(omitted)
+    explicit_loaded = load_config(explicit)
+
+    assert omitted_loaded.config.resources == ResourcePolicy()
+    assert explicit_loaded.config.resources == ResourcePolicy()
+    assert omitted_loaded.source_config_sha256 != explicit_loaded.source_config_sha256
+    assert omitted_loaded.effective_config_sha256 == explicit_loaded.effective_config_sha256
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("max_aggregate_input_pixels", 1, ResourcePolicy(max_aggregate_input_pixels=1)),
+        (
+            "max_aggregate_input_pixels",
+            MAX_AGGREGATE_INPUT_PIXELS_CAP,
+            ResourcePolicy(max_aggregate_input_pixels=MAX_AGGREGATE_INPUT_PIXELS_CAP),
+        ),
+        (
+            "max_aggregate_input_pixels",
+            DEFAULT_MAX_AGGREGATE_INPUT_PIXELS + 1,
+            ResourcePolicy(max_aggregate_input_pixels=DEFAULT_MAX_AGGREGATE_INPUT_PIXELS + 1),
+        ),
+        ("max_aggregate_output_pixels", 1, ResourcePolicy(max_aggregate_output_pixels=1)),
+        (
+            "max_aggregate_output_pixels",
+            MAX_AGGREGATE_OUTPUT_PIXELS_CAP,
+            ResourcePolicy(max_aggregate_output_pixels=MAX_AGGREGATE_OUTPUT_PIXELS_CAP),
+        ),
+        (
+            "max_aggregate_output_pixels",
+            DEFAULT_MAX_AGGREGATE_OUTPUT_PIXELS + 1,
+            ResourcePolicy(max_aggregate_output_pixels=DEFAULT_MAX_AGGREGATE_OUTPUT_PIXELS + 1),
+        ),
+        ("max_modeled_peak_live_bytes", 1, ResourcePolicy(max_modeled_peak_live_bytes=1)),
+        (
+            "max_modeled_peak_live_bytes",
+            MAX_MODELED_PEAK_LIVE_BYTES_CAP,
+            ResourcePolicy(max_modeled_peak_live_bytes=MAX_MODELED_PEAK_LIVE_BYTES_CAP),
+        ),
+        (
+            "max_modeled_peak_live_bytes",
+            DEFAULT_MAX_MODELED_PEAK_LIVE_BYTES + 1,
+            ResourcePolicy(max_modeled_peak_live_bytes=DEFAULT_MAX_MODELED_PEAK_LIVE_BYTES + 1),
+        ),
+    ],
+)
+def test_resource_policy_accepts_positive_values_through_each_cap(
+    tmp_path: Path,
+    key: str,
+    value: int,
+    expected: ResourcePolicy,
+) -> None:
+    path = tmp_path / "project.toml"
+    write_config(path, extraction_config() + f"\n[resources]\n{key} = {value}\n")
+
+    assert load_config(path).config.resources == expected
+
+
+@pytest.mark.parametrize(
+    ("key", "cap"),
+    [
+        ("max_aggregate_input_pixels", MAX_AGGREGATE_INPUT_PIXELS_CAP),
+        ("max_aggregate_output_pixels", MAX_AGGREGATE_OUTPUT_PIXELS_CAP),
+        ("max_modeled_peak_live_bytes", MAX_MODELED_PEAK_LIVE_BYTES_CAP),
+    ],
+)
+@pytest.mark.parametrize(
+    "raw_kind",
+    ["boolean", "float", "string", "array", "table"],
+)
+def test_resource_policy_rejects_non_integer_values_with_exact_error(
+    tmp_path: Path,
+    key: str,
+    cap: int,
+    raw_kind: str,
+) -> None:
+    path = tmp_path / "project.toml"
+    defaults = {
+        "max_aggregate_input_pixels": DEFAULT_MAX_AGGREGATE_INPUT_PIXELS,
+        "max_aggregate_output_pixels": DEFAULT_MAX_AGGREGATE_OUTPUT_PIXELS,
+        "max_modeled_peak_live_bytes": DEFAULT_MAX_MODELED_PEAK_LIVE_BYTES,
+    }
+    raw = {
+        "boolean": "true",
+        "float": f"{defaults[key]}.0",
+        "string": f'"{defaults[key]}"',
+        "array": "[1]",
+        "table": "{ value = 1 }",
+    }[raw_kind]
+    write_config(path, extraction_config() + f"\n[resources]\n{key} = {raw}\n")
+
+    with pytest.raises(ConfigurationError) as raised:
+        load_config(path)
+
+    assert str(raised.value) == (
+        f'PX_CONFIG_035 [config] "resources.{key}" must be an integer. '
+        f"Remediation: use a positive integer no greater than {cap}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "cap"),
+    [
+        ("max_aggregate_input_pixels", MAX_AGGREGATE_INPUT_PIXELS_CAP),
+        ("max_aggregate_output_pixels", MAX_AGGREGATE_OUTPUT_PIXELS_CAP),
+        ("max_modeled_peak_live_bytes", MAX_MODELED_PEAK_LIVE_BYTES_CAP),
+    ],
+)
+@pytest.mark.parametrize("value", [0, -1])
+def test_resource_policy_rejects_non_positive_values_with_exact_error(
+    tmp_path: Path,
+    key: str,
+    cap: int,
+    value: int,
+) -> None:
+    path = tmp_path / "project.toml"
+    write_config(path, extraction_config() + f"\n[resources]\n{key} = {value}\n")
+
+    with pytest.raises(ConfigurationError) as raised:
+        load_config(path)
+
+    assert str(raised.value) == (
+        f'PX_CONFIG_036 [config] "resources.{key}" must be greater than zero. '
+        f"Remediation: use a positive integer no greater than {cap}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "cap"),
+    [
+        ("max_aggregate_input_pixels", MAX_AGGREGATE_INPUT_PIXELS_CAP),
+        ("max_aggregate_output_pixels", MAX_AGGREGATE_OUTPUT_PIXELS_CAP),
+        ("max_modeled_peak_live_bytes", MAX_MODELED_PEAK_LIVE_BYTES_CAP),
+    ],
+)
+def test_resource_policy_rejects_values_above_cap_with_exact_error(
+    tmp_path: Path,
+    key: str,
+    cap: int,
+) -> None:
+    path = tmp_path / "project.toml"
+    value = cap + 1
+    write_config(path, extraction_config() + f"\n[resources]\n{key} = {value}\n")
+
+    with pytest.raises(ConfigurationError) as raised:
+        load_config(path)
+
+    assert str(raised.value) == (
+        f'PX_CONFIG_037 [config] "resources.{key}" value {value} '
+        f"exceeds the maximum allowed value {cap}. "
+        f"Remediation: use a positive integer no greater than {cap}"
+    )
+
+
+def test_resource_policy_rejects_unknown_keys_and_non_table_sections(tmp_path: Path) -> None:
+    unknown = tmp_path / "unknown.toml"
+    non_table = tmp_path / "non-table.toml"
+    write_config(unknown, extraction_config() + "\n[resources]\nfuture_budget = 1\n")
+    write_config(non_table, "resources = 1\n" + extraction_config())
+
+    with pytest.raises(ConfigurationError, match="PX_CONFIG_003"):
+        load_config(unknown)
+    with pytest.raises(ConfigurationError, match="PX_CONFIG_002"):
+        load_config(non_table)
+
+
+def test_toml_null_is_rejected_before_resource_policy_parsing(tmp_path: Path) -> None:
+    path = tmp_path / "project.toml"
+    write_config(
+        path,
+        extraction_config() + "\n[resources]\nmax_aggregate_input_pixels = null\n",
+    )
+
+    with pytest.raises(ConfigurationError, match="PX_CONFIG_001"):
+        load_config(path)
+
+
+def test_changed_resource_policy_changes_effective_identity(tmp_path: Path) -> None:
+    first = tmp_path / "first.toml"
+    second = tmp_path / "second.toml"
+    write_config(first)
+    write_config(
+        second,
+        extraction_config() + "\n[resources]\nmax_aggregate_output_pixels = 60000001\n",
+    )
+
+    assert load_config(first).effective_config_sha256 != load_config(second).effective_config_sha256

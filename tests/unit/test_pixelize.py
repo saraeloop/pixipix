@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from pixipix.errors import ProcessingError
+from pixipix.config import load_config
+from pixipix.errors import ProcessingError, ResourcePolicyError
+from pixipix.models import Dimensions
+from pixipix.stages.io import validate_stage_input
 from pixipix.stages.pixelize import (
     apply_alpha_policy,
     pixelize_prepared_grid,
     prepare_cell_grid,
+    project_cell_grid,
+    project_pixelize_stage,
     representative_pixel,
 )
+from tests.helpers import pipeline_config, write_config, write_declared_scale_stage
 
 
 def test_scenario_i_padding_exactly() -> None:
@@ -75,6 +83,153 @@ def test_padding_rejects_unsafe_prepared_dimensions_before_allocation(
             "pad-transparent",
             "f",
         )
+
+
+@pytest.mark.parametrize(
+    (
+        "policy",
+        "shape",
+        "cell_size",
+        "prepared_dimensions",
+        "logical_dimensions",
+        "amounts",
+    ),
+    [
+        ("pad-transparent", (6, 9, 4), 3, (9, 6), (3, 2), (0, 0, 0, 0)),
+        ("pad-transparent", (5, 7, 4), 3, (9, 6), (3, 2), (1, 2, 0, 0)),
+        ("crop-with-warning", (5, 7, 4), 3, (6, 3), (2, 1), (0, 0, 2, 1)),
+        ("error", (6, 9, 4), 3, (9, 6), (3, 2), (0, 0, 0, 0)),
+    ],
+    ids=["pad-exact", "pad-remainder", "crop-remainder", "error-exact"],
+)
+def test_cell_grid_projection_and_preparation_geometry_stay_synchronized(
+    policy: str,
+    shape: tuple[int, int, int],
+    cell_size: int,
+    prepared_dimensions: tuple[int, int],
+    logical_dimensions: tuple[int, int],
+    amounts: tuple[int, int, int, int],
+) -> None:
+    height, width, _ = shape
+    pixels = np.arange(np.prod(shape), dtype=np.uint8).reshape(shape)
+
+    projected = project_cell_grid(
+        Dimensions(width, height),
+        cell_size,
+        policy,
+        "frame",
+    )
+    prepared = prepare_cell_grid(pixels, cell_size, policy, "frame")
+
+    assert (
+        (
+            projected.prepared_dimensions.width,
+            projected.prepared_dimensions.height,
+        )
+        == prepared_dimensions
+        == (prepared.pixels.shape[1], prepared.pixels.shape[0])
+    )
+    assert (
+        projected.logical_output_dimensions.width,
+        projected.logical_output_dimensions.height,
+    ) == logical_dimensions
+    assert (
+        (
+            projected.top_padding,
+            projected.right_padding,
+            projected.top_crop,
+            projected.right_crop,
+        )
+        == amounts
+        == (
+            prepared.top_padding,
+            prepared.right_padding,
+            prepared.top_crop,
+            prepared.right_crop,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("policy", "shape", "cell_size", "code"),
+    [
+        ("error", (5, 7, 4), 3, "PX_PIXELIZE_REMAINDER_001"),
+        ("crop-with-warning", (2, 5, 4), 6, "PX_PIXELIZE_REMAINDER_002"),
+    ],
+    ids=["error-remainder", "crop-zero-result"],
+)
+def test_cell_grid_projection_and_preparation_reject_same_geometry(
+    policy: str,
+    shape: tuple[int, int, int],
+    cell_size: int,
+    code: str,
+) -> None:
+    height, width, _ = shape
+    pixels = np.zeros(shape, dtype=np.uint8)
+
+    with pytest.raises(ProcessingError) as projected:
+        project_cell_grid(Dimensions(width, height), cell_size, policy, "frame")
+    with pytest.raises(ProcessingError) as prepared:
+        prepare_cell_grid(pixels, cell_size, policy, "frame")
+
+    assert projected.value.code == prepared.value.code == code
+
+
+def test_prepared_image_limit_matches_projection_and_precedes_aggregate_policy(
+    tmp_path: Path,
+) -> None:
+    dimensions = Dimensions(4096, 4094)
+    base = np.zeros((1, 1, 4), dtype=np.uint8)
+    allocation_free_pixels = np.lib.stride_tricks.as_strided(
+        base,
+        shape=(4094, 4096, 4),
+        strides=(0, 0, 0),
+        writeable=False,
+    )
+
+    with pytest.raises(ProcessingError) as projected:
+        project_cell_grid(dimensions, 3, "pad-transparent", "large")
+    with pytest.raises(ProcessingError) as prepared:
+        prepare_cell_grid(
+            allocation_free_pixels,
+            3,
+            "pad-transparent",
+            "large",
+        )
+    assert projected.value.code == prepared.value.code == "PX_PIXELIZE_002"
+
+    config_path = tmp_path / "project.toml"
+    write_config(
+        config_path,
+        pipeline_config(
+            names=("large",),
+            scale='mode = "explicit-factor"\nfactor = 1.0',
+            pixelize=(
+                "source_cell_size = 3\n"
+                'representative = "alpha-weighted-majority"\n'
+                'alpha_policy = "binary"\n'
+                "alpha_threshold = 128\n"
+                'remainder_policy = "pad-transparent"'
+            ),
+        )
+        + "\n[resources]\nmax_aggregate_input_pixels = 1\n",
+    )
+    loaded = load_config(config_path)
+    scaled = tmp_path / "scaled"
+    write_declared_scale_stage(
+        scaled,
+        loaded,
+        ((4096, 4094),),
+        ((4096, 4094),),
+        factor=1.0,
+    )
+    validated = validate_stage_input(scaled, "scale")
+
+    with pytest.raises(ProcessingError) as raised:
+        project_pixelize_stage(validated, loaded)
+
+    assert not isinstance(raised.value, ResourcePolicyError)
+    assert raised.value.code == "PX_PIXELIZE_002"
 
 
 def test_majority_rgba_distinction_and_first_tie() -> None:

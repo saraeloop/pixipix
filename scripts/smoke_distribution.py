@@ -324,6 +324,141 @@ def _validate_installed_warning_visibility(
     print("installed CLI warning visibility validation passed")
 
 
+def _validate_installed_resource_identity(config: Path, working_directory: Path) -> Path:
+    from pixipix.config import load_config
+    from pixipix.resources import ResourcePolicy
+
+    explicit = working_directory / "explicit-resources.toml"
+    explicit.write_bytes(
+        config.read_bytes()
+        + (
+            b"\n[resources]\n"
+            b"max_aggregate_input_pixels = 50000000\n"
+            b"max_aggregate_output_pixels = 60000000\n"
+            b"max_modeled_peak_live_bytes = 1000000000\n"
+        )
+    )
+    omitted_loaded = load_config(config)
+    explicit_loaded = load_config(explicit)
+    if omitted_loaded.config.resources != ResourcePolicy():
+        raise SmokeFailure("omitted installed resource policy does not resolve to defaults")
+    if explicit_loaded.config.resources != ResourcePolicy():
+        raise SmokeFailure("explicit installed resource policy does not resolve to defaults")
+    if omitted_loaded.source_config_sha256 == explicit_loaded.source_config_sha256:
+        raise SmokeFailure(
+            "omitted and explicit resource defaults unexpectedly share source identity"
+        )
+    if omitted_loaded.effective_config_sha256 != explicit_loaded.effective_config_sha256:
+        raise SmokeFailure("omitted and explicit resource defaults differ in effective identity")
+    print("installed resource default identity validation passed")
+    return explicit
+
+
+def _write_resource_refusal_fixture(working_directory: Path) -> tuple[Path, Path, Path]:
+    from pixipix import __version__
+    from pixipix.config import load_config
+
+    config = working_directory / "resource-refusal.toml"
+    config.write_text(
+        (
+            "[project]\n"
+            'name = "installed-resource-refusal"\n'
+            "strict = true\n\n"
+            "[resources]\n"
+            "max_aggregate_input_pixels = 50000000\n"
+            "max_aggregate_output_pixels = 60000000\n"
+            "max_modeled_peak_live_bytes = 1000000000\n\n"
+            "[source]\n"
+            'format = "png"\n'
+            "expected_components = 1\n"
+            "max_width = 4096\n"
+            "max_height = 4096\n"
+            "max_pixels = 16777216\n"
+            "max_components = 1\n\n"
+            "[background]\n"
+            'mode = "alpha"\n'
+            "alpha_threshold = 8\n\n"
+            "[extract]\n"
+            "connectivity = 8\n"
+            "minimum_area = 1\n"
+            "padding = 0\n"
+            "row_tolerance = 0\n\n"
+            "[frames]\n"
+            'names = ["ceiling"]\n\n'
+            "[scale]\n"
+            'mode = "explicit-factor"\n'
+            "factor = 1.0\n\n"
+            "[pixelize]\n"
+            "source_cell_size = 4\n"
+            'representative = "alpha-weighted-majority"\n'
+            'alpha_policy = "binary"\n'
+            "alpha_threshold = 128\n"
+            'remainder_policy = "pad-transparent"\n'
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_config(config)
+    input_root = working_directory / "resource-refusal-extract"
+    frames_root = input_root / "frames"
+    frames_root.mkdir(parents=True)
+    (input_root / ".pixipix-output").write_text(
+        json.dumps({"owner": "pixipix", "schemaVersion": 1, "stage": "extract"}),
+        encoding="utf-8",
+    )
+    (frames_root / "ceiling.png").write_bytes(b"decoder sentinel: not a PNG")
+    metadata = {
+        "schemaVersion": 1,
+        "pixipixVersion": __version__,
+        "stage": "extract",
+        "status": "successful",
+        "sourceConfigSha256": loaded.source_config_sha256,
+        "effectiveConfigSha256": loaded.effective_config_sha256,
+        "frames": [
+            {
+                "name": "ceiling",
+                "relativePath": "frames/ceiling.png",
+                "sourceOrder": 0,
+                "paddedBounds": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 4096,
+                    "bottom": 4096,
+                },
+            }
+        ],
+        "warnings": [],
+    }
+    (input_root / "stage.json").write_text(json.dumps(metadata), encoding="utf-8")
+    output = working_directory / "resource-refusal-output"
+    return config, input_root, output
+
+
+def _validate_installed_resource_refusal(*, console: Path, working_directory: Path) -> None:
+    config, input_root, output = _write_resource_refusal_fixture(working_directory)
+    result = subprocess.run(
+        _render_command([console, "scale", input_root, "--config", config, "--output", output]),
+        cwd=working_directory,
+        capture_output=True,
+        check=False,
+    )
+    expected_stderr = (
+        b"PX_RESOURCE_001 [scale] aggregate resource policy exceeded: modeled peak "
+        b"live bytes under the explicit-buffer model 1409286144/1000000000. "
+        b"Remediation: reduce frame count or dimensions, adjust transformation or "
+        b"canvas settings, or raise the configured budget within its allowed cap when "
+        b"the execution environment can support it\n"
+    )
+    if result.returncode != 1:
+        raise SmokeFailure(f"installed resource refusal exited {result.returncode}, expected 1")
+    if result.stdout != b"":
+        raise SmokeFailure("installed resource refusal wrote unexpected stdout")
+    if result.stderr != expected_stderr:
+        raise SmokeFailure("installed resource refusal stderr does not match contract")
+    if output.exists():
+        raise SmokeFailure("installed resource refusal unexpectedly published output")
+    print("installed metadata-only resource refusal validation passed")
+
+
 def _stage_command(
     stage: SmokeStage,
     *,
@@ -368,6 +503,11 @@ def _run_installed_pipeline(
     config = fixture_dir / "robot-geometric.toml"
     if not image.is_file() or not config.is_file():
         raise SmokeFailure("copied robot smoke-test fixture is incomplete")
+    config = _validate_installed_resource_identity(config, working_directory)
+    _validate_installed_resource_refusal(
+        console=console,
+        working_directory=working_directory,
+    )
     output_root = working_directory / "smoke-output"
     outputs = {
         "extract": output_root / "extracted",

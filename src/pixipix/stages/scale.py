@@ -20,11 +20,15 @@ from pixipix.models import (
     ScaleStageMetadata,
     UInt8Image,
 )
+from pixipix.resources import ResourceProjection, enforce_resource_policy
 from pixipix.stages.io import (
     LoadedStageInput,
     OutputFrameImage,
-    load_stage_input,
+    ValidatedStageInput,
+    decode_stage_input,
     publish_stage_output,
+    validate_stage_input,
+    validate_stage_output_target,
 )
 
 MAX_TRANSFORMED_PIXELS = 16_777_216
@@ -34,6 +38,16 @@ MAX_TRANSFORMED_PIXELS = 16_777_216
 class ScaleRun:
     metadata: ScaleStageMetadata
     frame_images: tuple[OutputFrameImage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScaleStagePlan:
+    frames: tuple[ScaleFrame, ...]
+    global_factor: float
+    source_reference_measurement: int | None
+    exact_target_source_measurement: int | None
+    warnings: tuple[ProcessingWarning, ...]
+    projection: ResourceProjection
 
 
 def round_half_away_from_zero(value: float) -> int:
@@ -122,7 +136,9 @@ def _require_scale_config(loaded: LoadedConfig) -> ScaleConfig:
     return config
 
 
-def _validate_config_handoff(stage: LoadedStageInput, loaded: LoadedConfig) -> None:
+def _validate_config_handoff(
+    stage: ValidatedStageInput | LoadedStageInput, loaded: LoadedConfig
+) -> None:
     if stage.identity.effective_config_sha256 != loaded.effective_config_sha256:
         raise ConfigurationError(
             "PX_SCALE_CONFIG_002",
@@ -144,7 +160,9 @@ def _validate_config_handoff(stage: LoadedStageInput, loaded: LoadedConfig) -> N
 
 
 def _global_factor(
-    config: ScaleConfig, stage: LoadedStageInput, source_cell_size: int | None
+    config: ScaleConfig,
+    stage: ValidatedStageInput | LoadedStageInput,
+    source_cell_size: int | None,
 ) -> tuple[float, int | None, int | None]:
     if config.mode == "explicit-factor":
         if config.factor is None:
@@ -174,8 +192,46 @@ def _global_factor(
     return exact_target / source_measurement, source_measurement, exact_target
 
 
-def scale_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> ScaleRun:
-    """Scale already-validated extraction frames without mutating input buffers."""
+def project_scale_resources(frames: tuple[ScaleFrame, ...]) -> ResourceProjection:
+    """Project the locked scale explicit-buffer formula."""
+
+    aggregate_input = sum(
+        frame.input_dimensions.width * frame.input_dimensions.height for frame in frames
+    )
+    aggregate_output = sum(
+        frame.output_dimensions.width * frame.output_dimensions.height for frame in frames
+    )
+    transient = max(
+        (
+            max(
+                36 * input_area,
+                24 * input_area + 28 * output_area,
+                20 * input_area + 56 * output_area,
+                5 * output_area,
+            )
+            for frame in frames
+            for input_area, output_area in (
+                (
+                    frame.input_dimensions.width * frame.input_dimensions.height,
+                    frame.output_dimensions.width * frame.output_dimensions.height,
+                ),
+            )
+        ),
+        default=0,
+    )
+    return ResourceProjection(
+        "scale",
+        aggregate_input,
+        aggregate_output,
+        4 * aggregate_input + 4 * aggregate_output + transient,
+    )
+
+
+def project_scale_stage(
+    stage: ValidatedStageInput,
+    loaded: LoadedConfig,
+) -> ScaleStagePlan:
+    """Project all scale geometry and policy inputs without decoding pixels."""
 
     config = _require_scale_config(loaded)
     _validate_config_handoff(stage, loaded)
@@ -203,7 +259,6 @@ def scale_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> ScaleRun:
         for item in loaded.config.frame_overrides
     )
     metadata_frames: list[ScaleFrame] = []
-    output_frames: list[OutputFrameImage] = []
     for frame in stage.frames:
         multiplier = overrides.get(frame.name, 1.0)
         effective = global_factor * multiplier
@@ -233,7 +288,6 @@ def scale_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> ScaleRun:
                 frame=frame.name,
                 remediation="reduce the configured scale factor or target size",
             )
-        pixels = premultiplied_box_resize(frame.pixels, (width, height))
         metadata_frames.append(
             ScaleFrame(
                 name=frame.name,
@@ -245,7 +299,38 @@ def scale_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> ScaleRun:
                 effective_factor=effective,
             )
         )
-        output_frames.append(OutputFrameImage(frame.relative_path, pixels))
+    frames = tuple(metadata_frames)
+    return ScaleStagePlan(
+        frames,
+        global_factor,
+        source_measurement,
+        exact_target,
+        warnings,
+        project_scale_resources(frames),
+    )
+
+
+def scale_stage(
+    stage: LoadedStageInput,
+    loaded: LoadedConfig,
+    plan: ScaleStagePlan,
+) -> ScaleRun:
+    """Execute one admitted scale plan without recomputing geometry."""
+
+    config = _require_scale_config(loaded)
+    output_frames = tuple(
+        OutputFrameImage(
+            source.relative_path,
+            premultiplied_box_resize(
+                source.pixels,
+                (
+                    metadata.output_dimensions.width,
+                    metadata.output_dimensions.height,
+                ),
+            ),
+        )
+        for source, metadata in zip(stage.frames, plan.frames, strict=True)
+    )
     metadata = ScaleStageMetadata(
         schema_version=1,
         pixipix_version=__version__,
@@ -255,26 +340,30 @@ def scale_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> ScaleRun:
         source_config_sha256=loaded.source_config_sha256,
         effective_config_sha256=loaded.effective_config_sha256,
         scale_mode=config.mode,
-        global_factor=global_factor,
+        global_factor=plan.global_factor,
         reference_frame=config.reference_frame,
-        source_reference_measurement=source_measurement,
-        exact_target_source_measurement=exact_target,
+        source_reference_measurement=plan.source_reference_measurement,
+        exact_target_source_measurement=plan.exact_target_source_measurement,
         logical_target_size=config.target_size,
         source_cell_size=loaded.config.pixelize.source_cell_size,
         configured_frame_overrides=tuple(
             ScaleOverrideMetadata(item.frame_name, item.scale_multiplier)
             for item in loaded.config.frame_overrides
         ),
-        frames=tuple(metadata_frames),
-        warnings=warnings,
+        frames=plan.frames,
+        warnings=plan.warnings,
     )
-    return ScaleRun(metadata, tuple(output_frames))
+    return ScaleRun(metadata, output_frames)
 
 
 def publish_scale(
     input_dir: Path, loaded: LoadedConfig, output: Path, *, force: bool = False
 ) -> ScaleStageMetadata:
-    stage = load_stage_input(input_dir, "extract")
-    run = scale_stage(stage, loaded)
+    validate_stage_output_target(output, "scale", force=force)
+    validated = validate_stage_input(input_dir, "extract")
+    plan = project_scale_stage(validated, loaded)
+    enforce_resource_policy(plan.projection, loaded.config.resources)
+    stage = decode_stage_input(validated)
+    run = scale_stage(stage, loaded, plan)
     publish_stage_output(output, "scale", run.metadata, run.frame_images, force=force)
     return run.metadata

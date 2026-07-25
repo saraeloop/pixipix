@@ -15,6 +15,9 @@ from pixipix.cli import app
 from tests.helpers import (
     extraction_config,
     pipeline_config,
+    resource_scenario_e,
+    resource_scenario_f,
+    resource_scenario_h,
     transparent_sheet,
     write_config,
     write_rgba,
@@ -266,3 +269,135 @@ def test_actual_subprocess_maps_configuration_error_without_traceback(tmp_path: 
     assert result.returncode == 2
     assert "PX_CONFIG_003" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_invalid_resource_policy_precedes_missing_stage_input(tmp_path: Path) -> None:
+    config = tmp_path / "invalid-resource.toml"
+    output = tmp_path / "scaled"
+    write_config(
+        config,
+        pipeline_config() + "\n[resources]\nmax_aggregate_input_pixels = 150000001\n",
+    )
+
+    result = subprocess.run(
+        [
+            _console_script(),
+            "scale",
+            tmp_path / "missing-stage",
+            "--config",
+            config,
+            "--output",
+            output,
+        ],
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == b""
+    assert result.stderr == (
+        b'PX_CONFIG_037 [config] "resources.max_aggregate_input_pixels" value '
+        b"150000001 exceeds the maximum allowed value 150000000. Remediation: use "
+        b"a positive integer no greater than 150000000\n"
+    )
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("scenario", "command", "expected"),
+    [
+        (
+            resource_scenario_e,
+            "pixelize",
+            (
+                b"PX_RESOURCE_001 [pixelize] aggregate resource policy exceeded: "
+                b"aggregate input pixels 67043344/50000000. Remediation: reduce frame "
+                b"count or dimensions, adjust transformation or canvas settings, or raise "
+                b"the configured budget within its allowed cap when the execution "
+                b"environment can support it\n"
+            ),
+        ),
+        (
+            resource_scenario_f,
+            "scale",
+            (
+                b"PX_RESOURCE_001 [scale] aggregate resource policy exceeded: aggregate "
+                b"output pixels 60000001/60000000. Remediation: reduce frame count or "
+                b"dimensions, adjust transformation or canvas settings, or raise the "
+                b"configured budget within its allowed cap when the execution environment "
+                b"can support it\n"
+            ),
+        ),
+        (
+            resource_scenario_h,
+            "scale",
+            (
+                b"PX_RESOURCE_001 [scale] aggregate resource policy exceeded: aggregate "
+                b"input pixels 100000000/50000000; aggregate output pixels "
+                b"144000000/120000000; modeled peak live bytes under the explicit-buffer "
+                b"model 1076640000/1000000000. Remediation: reduce frame count or "
+                b"dimensions, adjust transformation or canvas settings, or raise the "
+                b"configured budget within its allowed cap when the execution environment "
+                b"can support it\n"
+            ),
+        ),
+    ],
+)
+def test_resource_refusal_cli_bytes_are_exact(
+    tmp_path: Path,
+    scenario: object,
+    command: str,
+    expected: bytes,
+) -> None:
+    build_scenario = scenario
+    assert callable(build_scenario)
+    config, input_root, output = build_scenario(tmp_path)
+
+    result = subprocess.run(
+        [_console_script(), command, input_root, "--config", config, "--output", output],
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert result.stderr == expected
+    assert result.stderr.endswith(b"\n") and not result.stderr.endswith(b"\n\n")
+    assert b"warning" not in result.stderr
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("scenario", [resource_scenario_f, resource_scenario_h])
+def test_equivalent_resource_refusals_are_byte_deterministic(
+    tmp_path: Path,
+    scenario: object,
+) -> None:
+    results: list[subprocess.CompletedProcess[bytes]] = []
+    outputs: list[Path] = []
+    for name in ("first", "second"):
+        root = tmp_path / name
+        root.mkdir()
+        build_scenario = scenario
+        assert callable(build_scenario)
+        config, input_root, output = build_scenario(root)
+        results.append(
+            subprocess.run(
+                [
+                    _console_script(),
+                    "scale",
+                    input_root,
+                    "--config",
+                    config,
+                    "--output",
+                    output,
+                ],
+                capture_output=True,
+                check=False,
+            )
+        )
+        outputs.append(output)
+
+    assert [result.returncode for result in results] == [1, 1]
+    assert [result.stdout for result in results] == [b"", b""]
+    assert results[0].stderr == results[1].stderr
+    assert not any(output.exists() for output in outputs)

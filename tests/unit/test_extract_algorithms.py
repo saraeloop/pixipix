@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 from itertools import permutations
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from pixipix.config import ExtractConfig
+import pixipix.stages.extract as extract_stage
+from pixipix.config import ExtractConfig, load_config
 from pixipix.errors import ProcessingError
 from pixipix.models import Component, Rect
-from pixipix.stages.extract import filter_components, label_components, order_components
+from pixipix.resources import ResourceProjection
+from pixipix.stages.extract import (
+    filter_components,
+    label_components,
+    order_components,
+    project_extract_resources,
+    project_extracted_frames,
+)
+from tests.helpers import extraction_config, write_config, write_rgba
 
 
 def test_four_and_eight_connectivity() -> None:
@@ -131,6 +141,65 @@ def test_row_tolerance_boundary_is_inclusive() -> None:
 
     assert order_components((first, at_boundary), 2) == (at_boundary, first)
     assert order_components((first, at_boundary), 1) == (first, at_boundary)
+
+
+def test_projected_extract_bounds_and_formula_inputs_stay_synchronized_without_crops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pixels = np.zeros((10, 12, 4), dtype=np.uint8)
+    pixels[0:2, 0:1] = (10, 20, 30, 255)
+    pixels[3:5, 5:7] = (40, 50, 60, 255)
+    pixels[8:10, 10:12] = (70, 80, 90, 255)
+    image = tmp_path / "source.png"
+    config = tmp_path / "project.toml"
+    write_rgba(image, pixels)
+    write_config(
+        config,
+        extraction_config(
+            names=("edge-top-left", "middle", "edge-bottom-right"),
+            minimum_area=1,
+            padding=2,
+            expected=3,
+        ),
+    )
+    loaded = load_config(config)
+    analysis = extract_stage._analyze(image, loaded)
+    crop_calls = 0
+
+    def record_crop(*_args: object) -> None:
+        nonlocal crop_calls
+        crop_calls += 1
+
+    monkeypatch.setattr(extract_stage, "_materialize_frame_crop", record_crop)
+    frames = project_extracted_frames(analysis, loaded)
+
+    assert tuple(frame.original_bounds for frame in frames) == (
+        Rect(0, 0, 1, 2),
+        Rect(5, 3, 7, 5),
+        Rect(10, 8, 12, 10),
+    )
+    assert (
+        tuple(frame.padded_bounds for frame in frames)
+        == tuple(
+            extract_stage._padded_bounds(component.bounds, 2, 12, 10)
+            for component in analysis.ordered
+        )
+        == (
+            Rect(0, 0, 3, 4),
+            Rect(3, 1, 9, 7),
+            Rect(8, 6, 12, 10),
+        )
+    )
+    frame_areas = tuple(frame.padded_bounds.width * frame.padded_bounds.height for frame in frames)
+    assert (10 * 12, sum(frame_areas), max(frame_areas)) == (120, 64, 36)
+    assert project_extract_resources(120, frames) == ResourceProjection(
+        "extract",
+        120,
+        64,
+        1_372,
+    )
+    assert crop_calls == 0
 
 
 def test_reading_order_is_permutation_independent_and_does_not_chain_rows() -> None:

@@ -11,13 +11,29 @@ from PIL import Image
 
 import pixipix.stages.io as stage_io
 from pixipix.config import load_config
-from pixipix.errors import ProcessingError, UnsupportedInputError
+from pixipix.errors import (
+    ConfigurationError,
+    ProcessingError,
+    ResourcePolicyError,
+    UnsupportedInputError,
+)
 from pixipix.serialization import write_json
 from pixipix.stages.extract import publish_extraction
 from pixipix.stages.io import load_stage_input
 from pixipix.stages.pixelize import publish_pixelize
 from pixipix.stages.scale import publish_scale
-from tests.helpers import pipeline_config, transparent_sheet, write_config, write_rgba
+from tests.helpers import (
+    pipeline_config,
+    resource_scenario_e,
+    resource_scenario_f,
+    resource_scenario_g,
+    resource_scenario_h,
+    transparent_sheet,
+    write_config,
+    write_declared_extract_stage,
+    write_declared_scale_stage,
+    write_rgba,
+)
 
 
 def _project(tmp_path: Path, *, config_text: str | None = None) -> tuple[Path, Path]:
@@ -358,6 +374,217 @@ def test_new_stage_failed_staging_cleans_temporary_output(
         publish_scale(extracted, load_config(config), output)
     assert not output.exists()
     assert list(tmp_path.glob(".scaled.pixipix-build-*")) == []
+
+
+@pytest.mark.parametrize(
+    ("scenario", "stage", "projection", "finding_kinds"),
+    [
+        (
+            resource_scenario_e,
+            "pixelize",
+            (67_043_344, 16_760_836, 469_303_408),
+            ("aggregate_input_pixels",),
+        ),
+        (
+            resource_scenario_f,
+            "scale",
+            (15_000_001, 60_000_001, 361_000_008),
+            ("aggregate_output_pixels",),
+        ),
+        (
+            resource_scenario_g,
+            "scale",
+            (16_777_216, 16_777_216, 1_409_286_144),
+            ("modeled_peak_live_bytes",),
+        ),
+        (
+            resource_scenario_h,
+            "scale",
+            (100_000_000, 144_000_000, 1_076_640_000),
+            (
+                "aggregate_input_pixels",
+                "aggregate_output_pixels",
+                "modeled_peak_live_bytes",
+            ),
+        ),
+    ],
+)
+def test_metadata_only_resource_scenarios_refuse_before_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    scenario: object,
+    stage: str,
+    projection: tuple[int, int, int],
+    finding_kinds: tuple[str, ...],
+) -> None:
+    build_scenario = scenario
+    assert callable(build_scenario)
+    config, input_root, output = build_scenario(tmp_path)
+    loaded = load_config(config)
+
+    def fail_decode(_validated: object) -> None:
+        raise AssertionError("decoder must not run for refused declarations")
+
+    if stage == "pixelize":
+        monkeypatch.setattr("pixipix.stages.pixelize.decode_stage_input", fail_decode)
+    else:
+        monkeypatch.setattr("pixipix.stages.scale.decode_stage_input", fail_decode)
+
+    def operation() -> object:
+        if stage == "pixelize":
+            return publish_pixelize(input_root, loaded, output)
+        return publish_scale(input_root, loaded, output)
+
+    with pytest.raises(ResourcePolicyError) as raised:
+        operation()
+
+    error = raised.value
+    assert error.projection.stage == stage
+    assert error.policy == loaded.config.resources
+    assert (
+        error.projection.aggregate_input_pixels,
+        error.projection.aggregate_output_pixels,
+        error.projection.modeled_peak_live_bytes,
+    ) == projection
+    assert tuple(finding.kind for finding in error.findings) == finding_kinds
+    assert capsys.readouterr() == ("", "")
+    assert not output.exists()
+
+
+def test_admitted_metadata_with_malformed_png_reaches_decoder(tmp_path: Path) -> None:
+    config = tmp_path / "admitted.toml"
+    write_config(
+        config,
+        pipeline_config(
+            names=("tiny",),
+            scale='mode = "explicit-factor"\nfactor = 1.0',
+        ),
+    )
+    loaded = load_config(config)
+    input_root = tmp_path / "admitted-extract"
+    output = tmp_path / "admitted-output"
+    write_declared_extract_stage(input_root, loaded, ((1, 1),))
+
+    with pytest.raises(UnsupportedInputError, match="PX_STAGE_011"):
+        publish_scale(input_root, loaded, output)
+
+    assert not output.exists()
+
+
+def test_scale_per_image_projection_precedes_aggregate_policy(tmp_path: Path) -> None:
+    config = tmp_path / "scale-per-image.toml"
+    write_config(
+        config,
+        pipeline_config(
+            names=("large",),
+            scale='mode = "explicit-factor"\nfactor = 2.0',
+        )
+        + "\n[resources]\nmax_aggregate_input_pixels = 1\n",
+    )
+    loaded = load_config(config)
+    input_root = tmp_path / "extract"
+    write_declared_extract_stage(input_root, loaded, ((3000, 3000),))
+
+    with pytest.raises(ProcessingError, match="PX_SCALE_002"):
+        publish_scale(input_root, loaded, tmp_path / "scaled")
+
+
+def test_pixelize_per_image_projection_precedes_aggregate_policy(tmp_path: Path) -> None:
+    config = tmp_path / "pixelize-per-image.toml"
+    write_config(
+        config,
+        pipeline_config(
+            names=("large",),
+            scale='mode = "explicit-factor"\nfactor = 1.0',
+            pixelize=(
+                "source_cell_size = 3\n"
+                'representative = "alpha-weighted-majority"\n'
+                'alpha_policy = "binary"\n'
+                "alpha_threshold = 128\n"
+                'remainder_policy = "pad-transparent"'
+            ),
+        )
+        + "\n[resources]\nmax_aggregate_input_pixels = 1\n",
+    )
+    loaded = load_config(config)
+    input_root = tmp_path / "scaled"
+    write_declared_scale_stage(
+        input_root,
+        loaded,
+        ((4096, 4094),),
+        ((4096, 4094),),
+        factor=1.0,
+    )
+
+    with pytest.raises(ProcessingError, match="PX_PIXELIZE_002"):
+        publish_pixelize(input_root, loaded, tmp_path / "pixelized")
+
+
+def test_mixed_resource_policy_lineage_fails_identity_before_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_config = tmp_path / "original.toml"
+    changed_config = tmp_path / "changed.toml"
+    write_config(original_config, pipeline_config(names=("tiny",)))
+    write_config(
+        changed_config,
+        pipeline_config(names=("tiny",))
+        + "\n[resources]\nmax_aggregate_output_pixels = 60000001\n",
+    )
+    original = load_config(original_config)
+    changed = load_config(changed_config)
+    input_root = tmp_path / "extract"
+    write_declared_extract_stage(input_root, original, ((1, 1),))
+
+    def fail_decode(_validated: object) -> None:
+        raise AssertionError("decoder must not run for an identity refusal")
+
+    monkeypatch.setattr("pixipix.stages.scale.decode_stage_input", fail_decode)
+    with pytest.raises(ConfigurationError, match="PX_SCALE_CONFIG_002"):
+        publish_scale(input_root, changed, tmp_path / "scaled")
+
+
+def test_over_budget_dimensions_do_not_override_schema_precedence(tmp_path: Path) -> None:
+    config, input_root, output = resource_scenario_e(tmp_path)
+    metadata_path = input_root / "stage.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["schemaVersion"] = 99
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(UnsupportedInputError, match="PX_STAGE_005"):
+        publish_pixelize(input_root, load_config(config), output)
+
+    assert not output.exists()
+
+
+def test_raised_byte_budget_admits_scenario_g_to_decoder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "raised.toml"
+    write_config(
+        config,
+        pipeline_config(
+            names=("large",),
+            scale='mode = "explicit-factor"\nfactor = 1.0',
+        )
+        + "\n[resources]\nmax_modeled_peak_live_bytes = 1500000000\n",
+    )
+    loaded = load_config(config)
+    input_root = tmp_path / "extract"
+    write_declared_extract_stage(input_root, loaded, ((4096, 4096),))
+
+    class DecodeReached(RuntimeError):
+        pass
+
+    def mark_decode(_validated: object) -> None:
+        raise DecodeReached
+
+    monkeypatch.setattr("pixipix.stages.scale.decode_stage_input", mark_decode)
+    with pytest.raises(DecodeReached):
+        publish_scale(input_root, loaded, tmp_path / "scaled")
 
 
 def test_internal_staged_marker_validation_is_a_processing_failure(

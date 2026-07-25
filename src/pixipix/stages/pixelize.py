@@ -17,11 +17,15 @@ from pixipix.models import (
     ProcessingWarning,
     UInt8Image,
 )
+from pixipix.resources import ResourceProjection, enforce_resource_policy
 from pixipix.stages.io import (
     LoadedStageInput,
     OutputFrameImage,
-    load_stage_input,
+    ValidatedStageInput,
+    decode_stage_input,
     publish_stage_output,
+    validate_stage_input,
+    validate_stage_output_target,
 )
 from pixipix.stages.scale import round_channel_half_away_from_zero
 
@@ -38,22 +42,44 @@ class PreparedCellGrid:
     warning: ProcessingWarning | None
 
 
+@dataclass(frozen=True, slots=True)
+class CellGridProjection:
+    input_dimensions: Dimensions
+    prepared_dimensions: Dimensions
+    logical_output_dimensions: Dimensions
+    top_padding: int
+    right_padding: int
+    top_crop: int
+    right_crop: int
+    warning: ProcessingWarning | None
+
+
 @dataclass(slots=True)
 class PixelizeRun:
     metadata: PixelizeStageMetadata
     frame_images: tuple[OutputFrameImage, ...]
 
 
-def prepare_cell_grid(
-    pixels: UInt8Image, cell_size: int, policy: str, frame_name: str
-) -> PreparedCellGrid:
-    """Prepare a bottom-left grid by changing only the top and right edges."""
+@dataclass(frozen=True, slots=True)
+class PixelizeStagePlan:
+    frames: tuple[PixelizeFrame, ...]
+    cell_grids: tuple[CellGridProjection, ...]
+    warnings: tuple[ProcessingWarning, ...]
+    projection: ResourceProjection
 
-    if pixels.ndim != 3 or pixels.shape[2] != 4 or pixels.dtype != np.uint8:
-        raise ValueError("pixelize input must be uint8 RGBA")
+
+def project_cell_grid(
+    dimensions: Dimensions,
+    cell_size: int,
+    policy: str,
+    frame_name: str,
+) -> CellGridProjection:
+    """Project bottom-left preparation and logical geometry without pixels."""
+
+    width = dimensions.width
+    height = dimensions.height
     if cell_size <= 0:
         raise ValueError("cell size must be positive")
-    height, width, _ = pixels.shape
     if width <= 0 or height <= 0:
         raise ProcessingError(
             "PX_PIXELIZE_001", "pixelize", "input frame is empty", frame=frame_name
@@ -73,26 +99,22 @@ def prepare_cell_grid(
             remediation="use pad-transparent or crop-with-warning, or adjust scale geometry",
         )
     if policy == "pad-transparent":
-        right_padding = 0 if width_remainder == 0 else cell_size - width_remainder
-        top_padding = 0 if height_remainder == 0 else cell_size - height_remainder
+        right_padding = (-width) % cell_size
+        top_padding = (-height) % cell_size
         prepared_width = width + right_padding
         prepared_height = height + top_padding
         if prepared_width * prepared_height > MAX_PREPARED_PIXELS:
             raise ProcessingError(
                 "PX_PIXELIZE_002",
                 "pixelize",
-                (f"prepared dimensions {prepared_width}x{prepared_height} exceed the safety limit"),
+                f"prepared dimensions {prepared_width}x{prepared_height} exceed the safety limit",
                 frame=frame_name,
                 remediation="reduce source_cell_size or adjust scale geometry",
             )
-        prepared = np.pad(
-            np.array(pixels, dtype=np.uint8, copy=True),
-            ((top_padding, 0), (0, right_padding), (0, 0)),
-            mode="constant",
-            constant_values=0,
-        )
-        return PreparedCellGrid(
-            np.asarray(prepared, dtype=np.uint8),
+        return CellGridProjection(
+            dimensions,
+            Dimensions(prepared_width, prepared_height),
+            Dimensions(prepared_width // cell_size, prepared_height // cell_size),
             top_padding,
             right_padding,
             0,
@@ -102,9 +124,9 @@ def prepare_cell_grid(
     if policy == "crop-with-warning":
         top_crop = height_remainder
         right_crop = width_remainder
-        cropped_height = height - top_crop
-        cropped_width = width - right_crop
-        if cropped_width <= 0 or cropped_height <= 0:
+        prepared_height = height - top_crop
+        prepared_width = width - right_crop
+        if prepared_width <= 0 or prepared_height <= 0:
             raise ProcessingError(
                 "PX_PIXELIZE_REMAINDER_002",
                 "pixelize",
@@ -119,14 +141,96 @@ def prepare_cell_grid(
                 stage="pixelize",
                 message=(
                     f'frame "{frame_name}" cropped top={top_crop}, right={right_crop} '
-                    f"from {width}x{height} to {cropped_width}x{cropped_height}"
+                    f"from {width}x{height} to {prepared_width}x{prepared_height}"
                 ),
             )
-        prepared = np.array(pixels[top_crop:height, 0:cropped_width], dtype=np.uint8, copy=True)
-        return PreparedCellGrid(prepared, 0, 0, top_crop, right_crop, warning)
+        return CellGridProjection(
+            dimensions,
+            Dimensions(prepared_width, prepared_height),
+            Dimensions(prepared_width // cell_size, prepared_height // cell_size),
+            0,
+            0,
+            top_crop,
+            right_crop,
+            warning,
+        )
     if policy == "error":
-        return PreparedCellGrid(np.array(pixels, dtype=np.uint8, copy=True), 0, 0, 0, 0, None)
+        return CellGridProjection(
+            dimensions,
+            dimensions,
+            Dimensions(width // cell_size, height // cell_size),
+            0,
+            0,
+            0,
+            0,
+            None,
+        )
     raise ValueError(f"unsupported remainder policy: {policy}")
+
+
+def prepare_cell_grid(
+    pixels: UInt8Image,
+    cell_size: int,
+    policy: str,
+    frame_name: str,
+    *,
+    projection: CellGridProjection | None = None,
+) -> PreparedCellGrid:
+    """Prepare a bottom-left grid by changing only the top and right edges."""
+
+    if pixels.ndim != 3 or pixels.shape[2] != 4 or pixels.dtype != np.uint8:
+        raise ValueError("pixelize input must be uint8 RGBA")
+    height, width, _ = pixels.shape
+    projected = projection or project_cell_grid(
+        Dimensions(width, height), cell_size, policy, frame_name
+    )
+    if (width, height) != (
+        projected.input_dimensions.width,
+        projected.input_dimensions.height,
+    ):
+        raise ValueError("pixelize input dimensions do not match projected geometry")
+    if policy == "pad-transparent":
+        prepared = np.pad(
+            np.array(pixels, dtype=np.uint8, copy=True),
+            ((projected.top_padding, 0), (0, projected.right_padding), (0, 0)),
+            mode="constant",
+            constant_values=0,
+        )
+        return PreparedCellGrid(
+            np.asarray(prepared, dtype=np.uint8),
+            projected.top_padding,
+            projected.right_padding,
+            0,
+            0,
+            projected.warning,
+        )
+    if policy == "crop-with-warning":
+        prepared = np.array(
+            pixels[
+                projected.top_crop : height,
+                0 : projected.prepared_dimensions.width,
+            ],
+            dtype=np.uint8,
+            copy=True,
+        )
+        return PreparedCellGrid(
+            prepared,
+            0,
+            0,
+            projected.top_crop,
+            projected.right_crop,
+            projected.warning,
+        )
+    if policy == "error":
+        return PreparedCellGrid(
+            np.array(pixels, dtype=np.uint8, copy=True),
+            0,
+            0,
+            0,
+            0,
+            projected.warning,
+        )
+    raise AssertionError("project_cell_grid accepted an unsupported policy")
 
 
 def _majority(cell: UInt8Image) -> tuple[int, int, int, int]:
@@ -224,7 +328,11 @@ def _require_pixelize_config(loaded: LoadedConfig) -> tuple[PixelizeConfig, int]
     return config, config.source_cell_size
 
 
-def _validate_config_handoff(stage: LoadedStageInput, loaded: LoadedConfig, cell_size: int) -> None:
+def _validate_config_handoff(
+    stage: ValidatedStageInput | LoadedStageInput,
+    loaded: LoadedConfig,
+    cell_size: int,
+) -> None:
     if stage.identity.effective_config_sha256 != loaded.effective_config_sha256:
         raise ConfigurationError(
             "PX_PIXELIZE_CONFIG_002",
@@ -251,40 +359,112 @@ def _validate_config_handoff(stage: LoadedStageInput, loaded: LoadedConfig, cell
         )
 
 
-def pixelize_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> PixelizeRun:
-    """Convert validated scale frames into one RGBA pixel per source cell."""
+def project_pixelize_resources(
+    frames: tuple[PixelizeFrame, ...],
+    cell_size: int,
+) -> ResourceProjection:
+    """Project the locked pixelize explicit-buffer formula."""
+
+    aggregate_input = sum(
+        frame.input_dimensions.width * frame.input_dimensions.height for frame in frames
+    )
+    aggregate_output = sum(
+        frame.logical_output_dimensions.width * frame.logical_output_dimensions.height
+        for frame in frames
+    )
+    transient = max(
+        (
+            max(
+                4 * input_area + 4 * prepared_area,
+                4 * prepared_area + 4 * cell_size * cell_size,
+                5 * logical_area,
+            )
+            for frame in frames
+            for input_area, prepared_area, logical_area in (
+                (
+                    frame.input_dimensions.width * frame.input_dimensions.height,
+                    frame.prepared_dimensions.width * frame.prepared_dimensions.height,
+                    frame.logical_output_dimensions.width * frame.logical_output_dimensions.height,
+                ),
+            )
+        ),
+        default=0,
+    )
+    return ResourceProjection(
+        "pixelize",
+        aggregate_input,
+        aggregate_output,
+        4 * aggregate_input + 4 * aggregate_output + transient,
+    )
+
+
+def project_pixelize_stage(
+    stage: ValidatedStageInput,
+    loaded: LoadedConfig,
+) -> PixelizeStagePlan:
+    """Project pixelize geometry and warnings without decoding frame PNGs."""
 
     config, cell_size = _require_pixelize_config(loaded)
     _validate_config_handoff(stage, loaded, cell_size)
     metadata_frames: list[PixelizeFrame] = []
-    output_frames: list[OutputFrameImage] = []
     warnings = list(stage.warnings)
+    cell_grids: list[CellGridProjection] = []
     for frame in stage.frames:
-        prepared = prepare_cell_grid(frame.pixels, cell_size, config.remainder_policy, frame.name)
-        if prepared.warning is not None:
-            warnings.append(prepared.warning)
-        output = pixelize_prepared_grid(
-            prepared.pixels,
+        projected = project_cell_grid(
+            frame.dimensions,
             cell_size,
-            config.representative,
-            config.alpha_policy,
-            config.alpha_threshold,
+            config.remainder_policy,
+            frame.name,
         )
-        prepared_height, prepared_width, _ = prepared.pixels.shape
-        logical_height, logical_width, _ = output.shape
+        if projected.warning is not None:
+            warnings.append(projected.warning)
         metadata_frames.append(
             PixelizeFrame(
                 name=frame.name,
                 relative_path=frame.relative_path,
                 source_order=frame.source_order,
                 input_dimensions=frame.dimensions,
-                prepared_dimensions=Dimensions(prepared_width, prepared_height),
-                top_padding=prepared.top_padding,
-                right_padding=prepared.right_padding,
-                top_crop=prepared.top_crop,
-                right_crop=prepared.right_crop,
-                logical_output_dimensions=Dimensions(logical_width, logical_height),
+                prepared_dimensions=projected.prepared_dimensions,
+                top_padding=projected.top_padding,
+                right_padding=projected.right_padding,
+                top_crop=projected.top_crop,
+                right_crop=projected.right_crop,
+                logical_output_dimensions=projected.logical_output_dimensions,
             )
+        )
+        cell_grids.append(projected)
+    frames = tuple(metadata_frames)
+    return PixelizeStagePlan(
+        frames,
+        tuple(cell_grids),
+        tuple(warnings),
+        project_pixelize_resources(frames, cell_size),
+    )
+
+
+def pixelize_stage(
+    stage: LoadedStageInput,
+    loaded: LoadedConfig,
+    plan: PixelizeStagePlan,
+) -> PixelizeRun:
+    """Execute one admitted pixelize plan without recomputing geometry."""
+
+    config, cell_size = _require_pixelize_config(loaded)
+    output_frames: list[OutputFrameImage] = []
+    for frame, projected in zip(stage.frames, plan.cell_grids, strict=True):
+        prepared = prepare_cell_grid(
+            frame.pixels,
+            cell_size,
+            config.remainder_policy,
+            frame.name,
+            projection=projected,
+        )
+        output = pixelize_prepared_grid(
+            prepared.pixels,
+            cell_size,
+            config.representative,
+            config.alpha_policy,
+            config.alpha_threshold,
         )
         output_frames.append(OutputFrameImage(frame.relative_path, output))
     metadata = PixelizeStageMetadata(
@@ -301,8 +481,8 @@ def pixelize_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> PixelizeRun
         alpha_policy=config.alpha_policy,
         alpha_threshold=config.alpha_threshold,
         remainder_policy=config.remainder_policy,
-        frames=tuple(metadata_frames),
-        warnings=tuple(warnings),
+        frames=plan.frames,
+        warnings=plan.warnings,
     )
     return PixelizeRun(metadata, tuple(output_frames))
 
@@ -310,7 +490,11 @@ def pixelize_stage(stage: LoadedStageInput, loaded: LoadedConfig) -> PixelizeRun
 def publish_pixelize(
     input_dir: Path, loaded: LoadedConfig, output: Path, *, force: bool = False
 ) -> PixelizeStageMetadata:
-    stage = load_stage_input(input_dir, "scale")
-    run = pixelize_stage(stage, loaded)
+    validate_stage_output_target(output, "pixelize", force=force)
+    validated = validate_stage_input(input_dir, "scale")
+    plan = project_pixelize_stage(validated, loaded)
+    enforce_resource_policy(plan.projection, loaded.config.resources)
+    stage = decode_stage_input(validated)
+    run = pixelize_stage(stage, loaded, plan)
     publish_stage_output(output, "pixelize", run.metadata, run.frame_images, force=force)
     return run.metadata

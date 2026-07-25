@@ -48,6 +48,24 @@ class LoadedStageInput:
     warnings: tuple[ProcessingWarning, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ValidatedStageFrame:
+    name: str
+    relative_path: PurePosixPath
+    source_order: int
+    dimensions: Dimensions
+    encoded_path: Path
+    declared_sha256: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedStageInput:
+    identity: PriorStageIdentity
+    frames: tuple[ValidatedStageFrame, ...]
+    metadata: dict[str, object]
+    warnings: tuple[ProcessingWarning, ...]
+
+
 @dataclass(slots=True)
 class OutputFrameImage:
     relative_path: PurePosixPath
@@ -443,10 +461,10 @@ def _validate_pixelize_metadata(
             )
 
 
-def load_stage_input(
+def validate_stage_input(
     root: Path, expected_stage: Literal["extract", "scale", "pixelize"]
-) -> LoadedStageInput:
-    """Load frames strictly in metadata order after validating the full handoff."""
+) -> ValidatedStageInput:
+    """Validate a complete prior-stage handoff without decoding frame PNGs."""
 
     for candidate in (root, *root.parents):
         if candidate.is_symlink() and not _trusted_tmp_alias(candidate):
@@ -531,7 +549,7 @@ def load_stage_input(
     frames_root = root / "frames"
     if frames_root.is_symlink() or not frames_root.is_dir():
         raise UnsupportedInputError("PX_STAGE_011", "stage frame directory is missing or unsafe")
-    frames: list[InputStageFrame] = []
+    frames: list[ValidatedStageFrame] = []
     seen_names: set[str] = set()
     seen_paths: set[str] = set()
     expected_paths: set[Path] = set()
@@ -559,35 +577,8 @@ def load_stage_input(
                 "PX_STAGE_011", "declared frame is missing or unsafe", path=relative.as_posix()
             )
         dimensions = _dimensions(frame, expected_stage)
-        try:
-            with python_warnings.catch_warnings():
-                python_warnings.simplefilter("error", Image.DecompressionBombWarning)
-                with Image.open(path) as image:
-                    if (
-                        image.format != "PNG"
-                        or image.mode != "RGBA"
-                        or image.size != (dimensions.width, dimensions.height)
-                    ):
-                        raise UnsupportedInputError(
-                            "PX_STAGE_012",
-                            "frame PNG mode or dimensions do not match metadata",
-                            path=relative.as_posix(),
-                        )
-                    image.load()
-                    pixels = np.array(image, dtype=np.uint8, copy=True)
-        except UnsupportedInputError:
-            raise
-        except (Image.DecompressionBombWarning, Image.DecompressionBombError) as error:
-            raise UnsupportedInputError(
-                "PX_STAGE_012",
-                "frame PNG dimensions exceed decoder safety limits",
-                path=relative.as_posix(),
-            ) from error
-        except (UnidentifiedImageError, OSError) as error:
-            raise UnsupportedInputError(
-                "PX_STAGE_011", "unable to decode declared frame", path=relative.as_posix()
-            ) from error
         declared_hash = frame.get("sha256")
+        expected_hash: str | None = None
         if declared_hash is not None:
             expected_hash = _sha256_string(declared_hash, "frame hash")
             if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
@@ -596,7 +587,16 @@ def load_stage_input(
                     "declared frame hash does not match bytes",
                     path=relative.as_posix(),
                 )
-        frames.append(InputStageFrame(name, relative, source_order, dimensions, pixels))
+        frames.append(
+            ValidatedStageFrame(
+                name,
+                relative,
+                source_order,
+                dimensions,
+                path,
+                expected_hash,
+            )
+        )
         seen_names.add(name)
         seen_paths.add(folded)
         expected_paths.add(path)
@@ -612,7 +612,67 @@ def load_stage_input(
     if root_entries != {".pixipix-output", "frames", "stage.json"}:
         raise UnsupportedInputError("PX_STAGE_014", "stage directory contains undeclared artifacts")
     identity = PriorStageIdentity(expected_stage, 1, version, effective_hash)
-    return LoadedStageInput(identity, tuple(frames), metadata, warnings)
+    return ValidatedStageInput(identity, tuple(frames), metadata, warnings)
+
+
+def decode_stage_input(validated: ValidatedStageInput) -> LoadedStageInput:
+    """Decode every validated frame while preserving existing integrity checks."""
+
+    frames: list[InputStageFrame] = []
+    for frame in validated.frames:
+        try:
+            with python_warnings.catch_warnings():
+                python_warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(frame.encoded_path) as image:
+                    if (
+                        image.format != "PNG"
+                        or image.mode != "RGBA"
+                        or image.size != (frame.dimensions.width, frame.dimensions.height)
+                    ):
+                        raise UnsupportedInputError(
+                            "PX_STAGE_012",
+                            "frame PNG mode or dimensions do not match metadata",
+                            path=frame.relative_path.as_posix(),
+                        )
+                    image.load()
+                    pixels = np.array(image, dtype=np.uint8, copy=True)
+        except UnsupportedInputError:
+            raise
+        except (Image.DecompressionBombWarning, Image.DecompressionBombError) as error:
+            raise UnsupportedInputError(
+                "PX_STAGE_012",
+                "frame PNG dimensions exceed decoder safety limits",
+                path=frame.relative_path.as_posix(),
+            ) from error
+        except (UnidentifiedImageError, OSError) as error:
+            raise UnsupportedInputError(
+                "PX_STAGE_011",
+                "unable to decode declared frame",
+                path=frame.relative_path.as_posix(),
+            ) from error
+        frames.append(
+            InputStageFrame(
+                frame.name,
+                frame.relative_path,
+                frame.source_order,
+                frame.dimensions,
+                pixels,
+            )
+        )
+    return LoadedStageInput(
+        validated.identity,
+        tuple(frames),
+        validated.metadata,
+        validated.warnings,
+    )
+
+
+def load_stage_input(
+    root: Path, expected_stage: Literal["extract", "scale", "pixelize"]
+) -> LoadedStageInput:
+    """Validate and decode frames through the compatibility handoff."""
+
+    return decode_stage_input(validate_stage_input(root, expected_stage))
 
 
 def _trusted_tmp_alias(path: Path) -> bool:
@@ -735,6 +795,17 @@ def _prepare_target(output: Path, force: bool, stage: StageName) -> None:
             "--force may replace only a valid PixiPix-owned output for this stage",
             path=output.name,
         )
+
+
+def validate_stage_output_target(
+    output: Path,
+    stage: Literal["scale", "pixelize", "align"],
+    *,
+    force: bool = False,
+) -> None:
+    """Validate a downstream output target without creating or mutating it."""
+
+    _prepare_target(output, force, stage)
 
 
 def _remove_tree(path: Path, parent: Path, prefix: str) -> bool:

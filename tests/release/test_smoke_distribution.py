@@ -22,6 +22,9 @@ from scripts.smoke_distribution import (
     _run_stage,
     _validate_final_output,
     _validate_installed_location,
+    _validate_installed_resource_identity,
+    _validate_installed_resource_refusal,
+    _write_resource_refusal_fixture,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -200,7 +203,38 @@ def test_installed_artifact_runs_complete_pipeline(
     assert "installed production publication validation passed for align" in result.stdout
     assert "final aligned metadata and PNG validation passed" in result.stdout
     assert "installed CLI warning visibility validation passed" in result.stdout
+    assert "installed resource default identity validation passed" in result.stdout
+    assert "installed metadata-only resource refusal validation passed" in result.stdout
     assert "distribution smoke test passed for pixipix" in result.stdout
+
+
+def test_installed_resource_smoke_contracts_are_safe_and_exact(tmp_path: Path) -> None:
+    config = PROJECT_ROOT / "tests" / "fixtures" / "robot-geometric.toml"
+    console = Path(sys.executable).with_name("pixipix")
+
+    explicit = _validate_installed_resource_identity(config, tmp_path)
+    _validate_installed_resource_refusal(
+        console=console,
+        working_directory=tmp_path,
+    )
+
+    assert explicit.name == "explicit-resources.toml"
+    assert not (tmp_path / "resource-refusal-output").exists()
+    assert (tmp_path / "resource-refusal-extract" / "frames" / "ceiling.png").stat().st_size < 64
+
+
+def test_resource_refusal_fixture_uses_explicit_policy_a(tmp_path: Path) -> None:
+    config, input_root, output = _write_resource_refusal_fixture(tmp_path)
+    parsed = tomllib.loads(config.read_text(encoding="utf-8"))
+
+    assert parsed["resources"] == {
+        "max_aggregate_input_pixels": 50_000_000,
+        "max_aggregate_output_pixels": 60_000_000,
+        "max_modeled_peak_live_bytes": 1_000_000_000,
+    }
+    assert parsed["frames"] == {"names": ["ceiling"]}
+    assert (input_root / "frames" / "ceiling.png").stat().st_size < 64
+    assert not output.exists()
 
 
 def test_repository_source_resolution_fails_installed_location_proof(tmp_path: Path) -> None:
