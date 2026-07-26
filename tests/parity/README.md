@@ -35,8 +35,10 @@ behavior change requires separate authority and review of old and new artifact
 evidence. This baseline is authoritative only for its recorded Python,
 dependency, and platform environment; it does not claim cross-platform byte
 equality or cover unexercised behavior. The Python patch version is part of that
-exact environment contract; a different patch version fails comparison rather
-than silently weakening or regenerating the oracle.
+exact environment contract. The exact behavior comparison skips before capture
+when the Python implementation, patch version, or platform differs, with an
+explicit expected-versus-actual reason; it never weakens or regenerates the
+oracle. On the canonical runtime, dependency-version drift remains a failure.
 
 The compatibility matrix also records private symbols consumed by current tests
 and smoke tooling. Those entries are behavior-preservation obligations for the

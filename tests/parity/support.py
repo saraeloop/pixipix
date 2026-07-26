@@ -17,6 +17,11 @@ MANIFEST_SCHEMA_VERSION = 1
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_PATH = Path(__file__).with_name("baseline") / "post-m3.json"
 API_PROBE_PATH = Path(__file__).with_name("capture_api.py")
+CANONICAL_RUNTIME_FIELDS = (
+    "implementation",
+    "pythonVersion",
+    "platformIdentifier",
+)
 
 
 class ParityError(RuntimeError):
@@ -128,6 +133,47 @@ def _environment(
         ) from error
     data["sourceImportIsolation"] = True
     return data
+
+
+def capture_environment(
+    source_root: Path,
+    *,
+    python: Path | None = None,
+    import_root: Path | None = None,
+) -> dict[str, object]:
+    interpreter = python or Path(sys.executable)
+    production_source_root = source_root if import_root is None else None
+    allowed_import_root = source_root if import_root is None else import_root
+    return _environment(
+        source_root,
+        interpreter,
+        import_root=allowed_import_root,
+        production_source_root=production_source_root,
+    )
+
+
+def canonical_runtime_mismatch(
+    expected_environment: object,
+    actual_environment: dict[str, object],
+) -> str | None:
+    if not isinstance(expected_environment, dict):
+        raise ParityError("canonical parity environment is missing or invalid")
+    differences = [
+        (
+            field,
+            expected_environment.get(field),
+            actual_environment.get(field),
+        )
+        for field in CANONICAL_RUNTIME_FIELDS
+        if expected_environment.get(field) != actual_environment.get(field)
+    ]
+    if not differences:
+        return None
+    details = ", ".join(
+        f"{field} expected={expected!r} actual={actual!r}"
+        for field, expected, actual in differences
+    )
+    return f"exact-byte parity requires the canonical runtime: {details}"
 
 
 def _copy_inputs(source_root: Path, execution_root: Path) -> dict[str, str]:
@@ -291,12 +337,10 @@ def capture_behavior(
     execution_root.mkdir(parents=True, exist_ok=True)
     interpreter = python or Path(sys.executable)
     production_source_root = source_root if import_root is None else None
-    allowed_import_root = source_root if import_root is None else import_root
-    environment = _environment(
+    environment = capture_environment(
         source_root,
-        interpreter,
-        import_root=allowed_import_root,
-        production_source_root=production_source_root,
+        python=interpreter,
+        import_root=import_root,
     )
     fixtures = _copy_inputs(source_root, execution_root)
     cases: list[dict[str, object]] = []

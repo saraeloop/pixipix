@@ -12,7 +12,9 @@ from tests.parity.support import (
     PROJECT_ROOT,
     ParityError,
     _artifact_records,
+    canonical_runtime_mismatch,
     capture_behavior,
+    capture_environment,
     compare_behavior,
     load_baseline,
     sha256_bytes,
@@ -35,8 +37,21 @@ def _repository_state() -> tuple[bytes, bytes]:
     return status, staged
 
 
+def _require_canonical_runtime(
+    expected_environment: object,
+    actual_environment: dict[str, object],
+) -> None:
+    mismatch = canonical_runtime_mismatch(expected_environment, actual_environment)
+    if mismatch is not None:
+        pytest.skip(mismatch)
+
+
 def test_current_behavior_matches_immutable_post_m3_baseline(tmp_path: Path) -> None:
     expected = load_baseline()
+    _require_canonical_runtime(
+        expected.get("environment"),
+        capture_environment(PROJECT_ROOT),
+    )
     baseline_before = sha256_bytes(BASELINE_PATH.read_bytes())
     repository_before = _repository_state()
 
@@ -47,8 +62,41 @@ def test_current_behavior_matches_immutable_post_m3_baseline(tmp_path: Path) -> 
     assert _repository_state() == repository_before
 
 
+def test_noncanonical_runtime_skips_before_behavior_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    baseline = load_baseline()
+    environment = baseline["environment"]
+    assert isinstance(environment, dict)
+    noncanonical = {
+        **environment,
+        "pythonVersion": "3.12.13",
+        "platformIdentifier": "linux-x86_64",
+    }
+
+    monkeypatch.setattr(
+        "tests.parity.test_parity.capture_environment",
+        lambda _source_root: noncanonical,
+    )
+
+    def fail_capture(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("behavior capture must not run outside the canonical runtime")
+
+    monkeypatch.setattr("tests.parity.test_parity.capture_behavior", fail_capture)
+    with pytest.raises(pytest.skip.Exception, match="linux-x86_64"):
+        test_current_behavior_matches_immutable_post_m3_baseline(tmp_path)
+
+
 def test_baseline_cases_capture_complete_ordered_contracts() -> None:
     baseline = load_baseline()
+    environment = baseline["environment"]
+    assert isinstance(environment, dict)
+    noncanonical = {**environment, "pythonVersion": "3.12.13"}
+    with pytest.raises(pytest.skip.Exception, match="pythonVersion"):
+        _require_canonical_runtime(environment, noncanonical)
+    dependency_drift = {**environment, "numpy": "different"}
+    _require_canonical_runtime(environment, dependency_drift)
     cases = baseline["cases"]
     assert isinstance(cases, list)
     assert len(cases) == 16
