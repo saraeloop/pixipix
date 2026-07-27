@@ -446,6 +446,19 @@ def test_stage_implementations_do_not_import_stages_io_facade() -> None:
     )
 
 
+def test_scale_package_is_one_monolithic_implementation_module() -> None:
+    package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale"
+    source_files = sorted(
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+
+    assert source_files == ["__init__.py"]
+    assert not (package.parent / "scale.py").exists()
+    assert _module(package / "__init__.py") == "pixipix.stages.scale"
+
+
 def test_only_locked_stage_to_stage_rounding_edge_exists() -> None:
     modules = {_module(path) for path in _production_files()}
     stage_edges = _cross_stage_edges(_edges(), modules)

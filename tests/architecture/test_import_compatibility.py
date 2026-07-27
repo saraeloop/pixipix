@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -859,3 +861,47 @@ def test_stage_plan_exports_are_the_exact_types_constructed_by_planners(
         loaded,
     )
     assert type(align_plan) is AlignmentStagePlan
+
+
+def test_scale_package_preserves_module_and_rounding_edge_identity() -> None:
+    package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale"
+    scale = importlib.import_module("pixipix.stages.scale")
+    pixelize = importlib.import_module("pixipix.stages.pixelize")
+    scale_file = scale.__file__
+
+    assert scale_file is not None
+    assert Path(scale_file).resolve() == (package / "__init__.py").resolve()
+    for name in (
+        "ScaleStagePlan",
+        "publish_scale",
+        "round_channel_half_away_from_zero",
+    ):
+        assert vars(scale)[name].__module__ == "pixipix.stages.scale"
+    assert (
+        vars(pixelize)["round_channel_half_away_from_zero"]
+        is vars(scale)["round_channel_half_away_from_zero"]
+    )
+    assert sys.modules["pixipix.stages.scale"] is scale
+    assert "pixipix.stages.scale.__init__" not in sys.modules
+
+    code = (
+        "import sys; "
+        "import pixipix.stages.pixelize as pixelize; "
+        "import pixipix.stages.scale as scale; "
+        "assert pixelize.round_channel_half_away_from_zero "
+        "is scale.round_channel_half_away_from_zero; "
+        "assert scale.ScaleStagePlan.__module__ == 'pixipix.stages.scale'; "
+        "assert scale.publish_scale.__module__ == 'pixipix.stages.scale'; "
+        "assert scale.round_channel_half_away_from_zero.__module__ "
+        "== 'pixipix.stages.scale'; "
+        "assert sys.modules['pixipix.stages.scale'] is scale; "
+        "assert 'pixipix.stages.scale.__init__' not in sys.modules"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
