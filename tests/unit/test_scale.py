@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +19,22 @@ from pixipix.stages.scale import (
     transformed_dimension,
 )
 from tests.helpers import pipeline_config, write_config, write_declared_extract_stage
+
+
+class _ScaleNumpyProxy:
+    def __init__(self, stack: Callable[..., object]) -> None:
+        self.stack = stack
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(np, name)
+
+
+def _patch_scale_stack(
+    monkeypatch: pytest.MonkeyPatch,
+    stack: Callable[..., object],
+) -> None:
+    scale = sys.modules["pixipix.stages.scale"]
+    monkeypatch.setitem(vars(scale), "np", _ScaleNumpyProxy(stack))
 
 
 def test_round_half_away_from_zero_boundaries() -> None:
@@ -198,6 +216,42 @@ def test_opaque_input_matches_ordinary_box() -> None:
     )
     expected = np.asarray(Image.fromarray(pixels, mode="RGBA").resize((1, 1), Image.Resampling.BOX))
     assert np.array_equal(premultiplied_box_resize(pixels, (1, 1)), expected)
+
+
+def test_opaque_fast_path_bypasses_premultiplied_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pixels = np.full((2, 2, 4), 255, dtype=np.uint8)
+
+    def fail_stack(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("opaque input reached the premultiplied path")
+
+    _patch_scale_stack(monkeypatch, fail_stack)
+    output = premultiplied_box_resize(pixels, (1, 1))
+
+    assert output.tolist() == [[[255, 255, 255, 255]]]
+
+
+def test_transparent_input_reaches_premultiplied_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pixels = np.array([[[20, 40, 60, 128], [80, 100, 120, 0]]], dtype=np.uint8)
+
+    class PremultipliedPathReached(Exception):
+        pass
+
+    def mark_stack(*_args: object, **_kwargs: object) -> None:
+        raise PremultipliedPathReached("scale premultiplied np.stack reached")
+
+    _patch_scale_stack(monkeypatch, mark_stack)
+    with pytest.raises(
+        PremultipliedPathReached,
+        match=r"scale premultiplied np\.stack reached",
+    ) as raised:
+        premultiplied_box_resize(pixels, (1, 1))
+    traceback_names = tuple(entry.name for entry in raised.traceback)
+    assert "premultiplied_box_resize" in traceback_names
+    assert traceback_names[-1] == "mark_stack"
 
 
 def test_random_opaque_inputs_are_byte_equivalent_to_native_box() -> None:

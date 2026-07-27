@@ -327,6 +327,61 @@ def test_wheel_contains_align_package_member_only(
 
 
 @pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
+def test_wheel_contains_scale_package_member_only(
+    built_artifacts: BuiltArtifacts, artifact_name: str
+) -> None:
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+    source = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale" / "__init__.py"
+
+    with zipfile.ZipFile(wheel) as archive:
+        members = set(archive.namelist())
+        assert {member for member in members if member.startswith("pixipix/stages/scale")} == {
+            "pixipix/stages/scale/__init__.py"
+        }
+        assert archive.read("pixipix/stages/scale/__init__.py") == source.read_bytes()
+    assert "pixipix/stages/scale.py" not in members
+
+
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
+def test_wheel_scale_and_pixelize_imports_work_outside_checkout(
+    tmp_path: Path,
+    built_artifacts: BuiltArtifacts,
+    artifact_name: str,
+) -> None:
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+    working_directory = tmp_path / f"{artifact_name}-scale-import"
+    working_directory.mkdir()
+    code = (
+        "import pathlib, sys; "
+        "sys.path.insert(0, sys.argv[1]); "
+        "import pixipix.stages.pixelize as pixelize; "
+        "import pixipix.stages.scale as scale; "
+        "assert pixelize.round_channel_half_away_from_zero "
+        "is scale.round_channel_half_away_from_zero; "
+        "assert callable(scale.round_channel_half_away_from_zero); "
+        "assert scale.ScaleStagePlan.__module__ == 'pixipix.stages.scale'; "
+        "assert scale.publish_scale.__module__ == 'pixipix.stages.scale'; "
+        "assert scale.round_channel_half_away_from_zero.__module__ "
+        "== 'pixipix.stages.scale'; "
+        "assert sys.modules['pixipix.stages.scale'] is scale; "
+        "assert 'pixipix.stages.scale.__init__' not in sys.modules; "
+        "print(pathlib.Path(scale.__file__).resolve()); "
+        "print(pathlib.Path(pixelize.__file__).resolve())"
+    )
+
+    result = _run(
+        [sys.executable, "-I", "-c", code, wheel.resolve()],
+        cwd=working_directory,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert str(wheel.resolve()) in result.stdout
+    assert str(PROJECT_ROOT.resolve()) not in result.stdout
+
+
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
 def test_wheel_contains_exact_shared_pipeline_members(
     built_artifacts: BuiltArtifacts, artifact_name: str
 ) -> None:
