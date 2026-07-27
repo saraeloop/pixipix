@@ -28,6 +28,80 @@ STAGE_PUBLISHERS = {
     "publish_pixelize",
     "publish_align",
 }
+ALIGN_MODULES = {
+    "pixipix.stages.align",
+    "pixipix.stages.align.api",
+    "pixipix.stages.align.execution",
+    "pixipix.stages.align.geometry",
+    "pixipix.stages.align.planning",
+}
+ALIGN_ALLOWED_INTERNAL_EDGES = {
+    ("pixipix.stages.align", "pixipix.stages.align.api"),
+    ("pixipix.stages.align", "pixipix.stages.align.execution"),
+    ("pixipix.stages.align", "pixipix.stages.align.geometry"),
+    ("pixipix.stages.align", "pixipix.stages.align.planning"),
+    ("pixipix.stages.align.api", "pixipix.stages.align.execution"),
+    ("pixipix.stages.align.api", "pixipix.stages.align.planning"),
+    ("pixipix.stages.align.execution", "pixipix.stages.align.planning"),
+    ("pixipix.stages.align.planning", "pixipix.stages.align.geometry"),
+}
+ALIGN_ALLOWED_PIXIPIX_DEPENDENCIES = {
+    "pixipix.stages.align": {
+        "pixipix.stages.align.api",
+        "pixipix.stages.align.execution",
+        "pixipix.stages.align.geometry",
+        "pixipix.stages.align.planning",
+    },
+    "pixipix.stages.align.api": {
+        "pixipix.config",
+        "pixipix.models",
+        "pixipix.resources",
+        "pixipix.stages.align.execution",
+        "pixipix.stages.align.planning",
+        "pixipix.stages.io",
+    },
+    "pixipix.stages.align.execution": {
+        "pixipix",
+        "pixipix.config",
+        "pixipix.models",
+        "pixipix.stages.align.planning",
+        "pixipix.stages.io",
+    },
+    "pixipix.stages.align.geometry": {
+        "pixipix.config",
+        "pixipix.models",
+    },
+    "pixipix.stages.align.planning": {
+        "pixipix.config",
+        "pixipix.errors",
+        "pixipix.models",
+        "pixipix.resources",
+        "pixipix.stages.align.geometry",
+        "pixipix.stages.io",
+    },
+}
+ALIGN_ALLOWED_EXTERNAL_IMPORTS = {
+    "pixipix.stages.align": {"__future__"},
+    "pixipix.stages.align.api": {"__future__", "pathlib"},
+    "pixipix.stages.align.execution": {"__future__", "dataclasses", "numpy"},
+    "pixipix.stages.align.geometry": {"__future__", "pathlib"},
+    "pixipix.stages.align.planning": {"__future__", "dataclasses"},
+}
+ALIGN_ALLOWED_IO_SYMBOLS = {
+    "pixipix.stages.align.api": {
+        "decode_stage_input",
+        "publish_stage_output",
+        "validate_stage_input",
+        "validate_stage_output_target",
+    },
+    "pixipix.stages.align.execution": {
+        "LoadedStageInput",
+        "OutputFrameImage",
+    },
+    "pixipix.stages.align.planning": {
+        "ValidatedStageInput",
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,12 +317,18 @@ def _failure(rule: str, edge: ImportEdge) -> str:
 
 def test_only_cli_imports_stage_command_publishers() -> None:
     modules = {_module(path) for path in _production_files()}
+    facade_reexport = (
+        "pixipix.stages.align",
+        "pixipix.stages.align.api",
+        ("publish_align",),
+    )
     violations = [
         edge
         for edge in _edges()
         if any(_stage_root(target) for target in _target_modules(edge, modules))
         and STAGE_PUBLISHERS.intersection(edge.names)
         and edge.importer != "pixipix.cli"
+        and (edge.importer, edge.imported, edge.names) != facade_reexport
     ]
     assert not violations, "\n".join(
         _failure("stage publisher orchestration", edge) for edge in violations
@@ -372,6 +452,52 @@ def test_only_module_entrypoint_imports_cli() -> None:
 def test_production_import_graph_has_no_hard_cycle() -> None:
     modules = {_module(path) for path in _production_files()}
     _assert_no_hard_cycle(_edges(), modules)
+
+
+def test_align_internal_module_set_and_dependency_direction_are_exact() -> None:
+    modules = {_module(path) for path in _production_files()}
+    actual_modules = {
+        module
+        for module in modules
+        if module == "pixipix.stages.align" or module.startswith("pixipix.stages.align.")
+    }
+    assert actual_modules == ALIGN_MODULES, (
+        "align internal module set differs: "
+        f"missing={sorted(ALIGN_MODULES - actual_modules)}, "
+        f"unexpected={sorted(actual_modules - ALIGN_MODULES)}"
+    )
+
+    violations: list[str] = []
+    internal_edges: set[tuple[str, str]] = set()
+    for edge in _edges():
+        if edge.importer not in ALIGN_MODULES:
+            continue
+        if (
+            not edge.imported.startswith("pixipix")
+            and edge.imported not in ALIGN_ALLOWED_EXTERNAL_IMPORTS[edge.importer]
+        ):
+            violations.append(_failure("align external capability", edge))
+        if edge.imported == "pixipix.stages.io" and (
+            set(edge.names) - ALIGN_ALLOWED_IO_SYMBOLS.get(edge.importer, set())
+        ):
+            violations.append(_failure("align shared I/O capability", edge))
+        for target in _target_modules(edge, modules):
+            if target in ALIGN_MODULES:
+                internal_edges.add((edge.importer, target))
+                if (edge.importer, target) not in ALIGN_ALLOWED_INTERNAL_EDGES:
+                    violations.append(_failure("align internal dependency direction", edge))
+            if (
+                target.startswith("pixipix")
+                and target not in ALIGN_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
+            ):
+                violations.append(_failure("align layer capability", edge))
+
+    assert not violations, "\n".join(violations)
+    assert internal_edges == ALIGN_ALLOWED_INTERNAL_EDGES, (
+        "align internal dependency graph differs: "
+        f"missing={sorted(ALIGN_ALLOWED_INTERNAL_EDGES - internal_edges)}, "
+        f"unexpected={sorted(internal_edges - ALIGN_ALLOWED_INTERNAL_EDGES)}"
+    )
 
 
 @pytest.mark.parametrize(

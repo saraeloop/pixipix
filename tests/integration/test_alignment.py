@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -54,12 +56,52 @@ def _pipeline(
     return image, config, extracted, scaled, pixelized
 
 
+def _record_call[**P, R](
+    name: str,
+    calls: list[str],
+    function: Callable[P, R],
+) -> Callable[P, R]:
+    def recorded(*args: P.args, **kwargs: P.kwargs) -> R:
+        calls.append(name)
+        return function(*args, **kwargs)
+
+    return recorded
+
+
 def _artifact_bytes(root: Path) -> dict[str, bytes]:
     return {
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def test_align_api_preserves_exact_orchestration_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, config, _, _, pixelized = _pipeline(tmp_path)
+    output = tmp_path / "aligned"
+    align_api = importlib.import_module("pixipix.stages.align.api")
+    expected = (
+        "validate_stage_output_target",
+        "validate_stage_input",
+        "project_align_stage",
+        "enforce_resource_policy",
+        "decode_stage_input",
+        "align_stage",
+        "publish_stage_output",
+    )
+    calls: list[str] = []
+    for name in expected:
+        original = getattr(align_api, name)
+        monkeypatch.setattr(align_api, name, _record_call(name, calls, original))
+
+    metadata = publish_align(pixelized, load_config(config), output)
+
+    assert tuple(calls) == expected
+    assert metadata.stage == "align"
+    assert output.is_dir()
 
 
 def test_pixelize_to_align_output_and_metadata_contract(tmp_path: Path) -> None:
@@ -568,7 +610,7 @@ def test_warning_only_clipping_reaches_resource_refusal_before_decode(
     def fail_decode(_validated: object) -> None:
         raise AssertionError("decoder must not run for a resource refusal")
 
-    monkeypatch.setattr("pixipix.stages.align.decode_stage_input", fail_decode)
+    monkeypatch.setattr("pixipix.stages.align.api.decode_stage_input", fail_decode)
     with pytest.raises(ResourcePolicyError) as raised:
         publish_align(pixelized, loaded, output)
 
@@ -593,7 +635,7 @@ def test_align_execution_uses_module_decoder_binding(
     def fail_decode(_validated: object) -> None:
         raise PatchedDecoderUsed
 
-    monkeypatch.setattr("pixipix.stages.align.decode_stage_input", fail_decode)
+    monkeypatch.setattr("pixipix.stages.align.api.decode_stage_input", fail_decode)
     with pytest.raises(PatchedDecoderUsed):
         publish_align(pixelized, load_config(config), output)
 

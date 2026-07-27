@@ -27,6 +27,7 @@ StageModule = Literal[
     "pixipix.stages.scale",
     "pixipix.stages.pixelize",
     "pixipix.stages.align",
+    "pixipix.stages.align.api",
     "pixipix.stages.io",
 ]
 SymbolKind = Literal["function", "class", "value"]
@@ -367,7 +368,7 @@ MATRIX = (
         "*, force: 'bool' = False) -> 'AlignmentStageMetadata'",
     ),
     _symbol(
-        "pixipix.stages.align",
+        "pixipix.stages.align.api",
         "decode_stage_input",
         ("monkeypatch",),
         "monkeypatch-sensitive",
@@ -450,7 +451,7 @@ MATRIX = (
 
 PHYSICAL_LAYOUT = (
     PhysicalLayoutAssumption(
-        "pixipix/stages/align/__init__.py",
+        "pixipix/stages/align/execution.py",
         "tests/release/test_smoke_distribution.py",
         "installed-wheel corruption member selected by exact archive path",
     ),
@@ -468,6 +469,8 @@ def _current_consumers() -> list[tuple[Path, str]]:
                 continue
             relative = path.relative_to(PROJECT_ROOT).as_posix()
             if relative.startswith("tests/architecture/"):
+                continue
+            if relative.startswith("src/pixipix/stages/align/"):
                 continue
             category = (
                 "production"
@@ -519,10 +522,13 @@ def _consumed_symbols() -> set[tuple[str, str]]:
             ):
                 consumed.add((aliases[node.args[0].id], node.args[1].value))
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                for module in targets:
+                if node.value in targets:
+                    continue
+                for module in sorted(targets, key=len, reverse=True):
                     prefix = module + "."
                     if node.value.startswith(prefix):
                         consumed.add((module, node.value.removeprefix(prefix).split(".", 1)[0]))
+                        break
     return consumed
 
 
@@ -562,7 +568,7 @@ def test_monkeypatch_sensitive_bindings_resolve_at_current_paths() -> None:
         "pixipix.stages.extract:_materialize_frame_crop",
         "pixipix.stages.scale:decode_stage_input",
         "pixipix.stages.pixelize:decode_stage_input",
-        "pixipix.stages.align:decode_stage_input",
+        "pixipix.stages.align.api:decode_stage_input",
     )
     for target in targets:
         assert _resolve_monkeypatch_target(target) is not None
@@ -579,6 +585,75 @@ def test_align_consumer_import_path_resolves_to_package_member() -> None:
         "src/pixipix/stages/align/__init__.py"
     )
     assert not (PROJECT_ROOT / "src" / "pixipix" / "stages" / "align.py").exists()
+
+
+def test_align_facade_reexports_exact_internal_objects() -> None:
+    facade = importlib.import_module("pixipix.stages.align")
+    api = importlib.import_module("pixipix.stages.align.api")
+    execution = importlib.import_module("pixipix.stages.align.execution")
+    geometry = importlib.import_module("pixipix.stages.align.geometry")
+    planning = importlib.import_module("pixipix.stages.align.planning")
+
+    owners = {
+        "AlignmentRun": execution,
+        "AlignmentStagePlan": planning,
+        "EMPTY_RECTANGLE": geometry,
+        "align_stage": execution,
+        "calculate_alignment_frame": geometry,
+        "clipping_finding": planning,
+        "compose_aligned_canvas": execution,
+        "mathematical_floor_center": geometry,
+        "project_align_resources": planning,
+        "project_align_stage": planning,
+        "publish_align": api,
+    }
+    for name, owner in owners.items():
+        assert getattr(facade, name) is getattr(owner, name)
+    assert not hasattr(facade, "decode_stage_input")
+    assert api.decode_stage_input is not None
+
+
+def test_align_facade_is_relative_grouped_and_definition_free() -> None:
+    facade_path = PROJECT_ROOT / "src" / "pixipix" / "stages" / "align" / "__init__.py"
+    tree = ast.parse(facade_path.read_text(encoding="utf-8"), filename=str(facade_path))
+    relative_imports = [
+        node for node in tree.body if isinstance(node, ast.ImportFrom) and node.level
+    ]
+    expected = {
+        "api": ("publish_align",),
+        "execution": ("AlignmentRun", "align_stage", "compose_aligned_canvas"),
+        "geometry": (
+            "EMPTY_RECTANGLE",
+            "calculate_alignment_frame",
+            "mathematical_floor_center",
+        ),
+        "planning": (
+            "AlignmentStagePlan",
+            "clipping_finding",
+            "project_align_resources",
+            "project_align_stage",
+        ),
+    }
+
+    assert {
+        node.module: tuple(alias.name for alias in node.names) for node in relative_imports
+    } == expected
+    assert all(node.level == 1 for node in relative_imports)
+    assert all(alias.asname == alias.name for node in relative_imports for alias in node.names)
+    assert all(isinstance(node, (ast.Expr, ast.ImportFrom)) for node in tree.body)
+    expressions = [node for node in tree.body if isinstance(node, ast.Expr)]
+    assert len(expressions) == 1
+    assert isinstance(expressions[0].value, ast.Constant)
+    assert isinstance(expressions[0].value.value, str)
+
+    definitions = 0
+    for path in sorted((facade_path.parent).glob("*.py")):
+        module_tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        definitions += sum(
+            isinstance(node, ast.ClassDef) and node.name == "AlignmentStagePlan"
+            for node in module_tree.body
+        )
+    assert definitions == 1
 
 
 def test_installed_smoke_private_import_and_physical_member_are_explicit() -> None:

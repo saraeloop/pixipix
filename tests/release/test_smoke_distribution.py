@@ -5,6 +5,7 @@ import csv
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -19,7 +20,9 @@ from scripts.smoke_distribution import (
     FIXTURE_CONTRACT,
     SMOKE_STAGES,
     SmokeFailure,
+    _isolated_paths,
     _run_stage,
+    _sanitized_environment,
     _validate_final_output,
     _validate_installed_location,
     _validate_installed_resource_identity,
@@ -38,9 +41,21 @@ class BuiltArtifacts:
     rebuilt_wheel: Path
 
 
-def _run(command: list[str | Path], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: list[str | Path],
+    *,
+    cwd: Path,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     rendered = [str(part) for part in command]
-    return subprocess.run(rendered, cwd=cwd, capture_output=True, text=True, check=False)
+    return subprocess.run(
+        rendered,
+        cwd=cwd,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def _single(directory: Path, pattern: str) -> Path:
@@ -123,14 +138,122 @@ def _record_hash(content: bytes) -> str:
     return "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
+def _validate_prior_stage_artifacts(output: Path, stage: str) -> None:
+    assert json.loads((output / ".pixipix-output").read_text(encoding="utf-8")) == {
+        "owner": "pixipix",
+        "schemaVersion": 1,
+        "stage": stage,
+    }
+    metadata = json.loads((output / "stage.json").read_text(encoding="utf-8"))
+    assert metadata["stage"] == stage
+    assert metadata["status"] == "successful"
+    assert tuple(frame["name"] for frame in metadata["frames"]) == FIXTURE_CONTRACT.frame_names
+    assert (
+        tuple(frame["relativePath"] for frame in metadata["frames"]) == FIXTURE_CONTRACT.frame_paths
+    )
+    for relative_path in FIXTURE_CONTRACT.frame_paths:
+        with Image.open(output / relative_path) as image:
+            image.load()
+            assert image.format == "PNG"
+            assert image.mode == "RGBA"
+
+
+def _run_corrupted_installed_pipeline(
+    wheel: Path,
+    root: Path,
+) -> subprocess.CompletedProcess[str]:
+    environment = root / "venv"
+    working_directory = root / "work"
+    fixture_directory = root / "fixture"
+    root.mkdir()
+    working_directory.mkdir()
+    fixture_directory.mkdir()
+    for filename in ("robot-geometric.png", "robot-geometric.toml"):
+        shutil.copy2(PROJECT_ROOT / "tests" / "fixtures" / filename, fixture_directory / filename)
+
+    sanitized = _sanitized_environment(environment)
+    sanitized.pop("PYTHONHOME", None)
+    creation = _run(
+        ["uv", "venv", "--python", sys.executable, environment],
+        cwd=root,
+        environment=sanitized,
+    )
+    assert creation.returncode == 0, creation.stderr
+    interpreter, console = _isolated_paths(environment)
+    installation = _run(
+        ["uv", "pip", "install", "--python", interpreter, wheel],
+        cwd=root,
+        environment=sanitized,
+    )
+    assert installation.returncode == 0, installation.stderr
+
+    imported = _run(
+        [
+            interpreter,
+            "-c",
+            (
+                "import pathlib; import pixipix.stages.align as align; "
+                "print(pathlib.Path(align.__file__).resolve())"
+            ),
+        ],
+        cwd=working_directory,
+        environment=sanitized,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert str(environment.resolve()) in imported.stdout
+    assert str(PROJECT_ROOT.resolve()) not in imported.stdout
+
+    help_result = _run([console, "--help"], cwd=working_directory, environment=sanitized)
+    assert help_result.returncode == 0, help_result.stderr
+    assert "Tiny poses in. Tidy pixels out." in help_result.stdout
+
+    image = fixture_directory / "robot-geometric.png"
+    config = fixture_directory / "robot-geometric.toml"
+    output_root = working_directory / "smoke-output"
+    outputs = {
+        "extract": output_root / "extracted",
+        "scale": output_root / "scaled",
+        "pixelize": output_root / "pixelized",
+        "align": output_root / "aligned",
+    }
+    inspect_result = _run(
+        [console, "inspect", image, "--config", config],
+        cwd=working_directory,
+        environment=sanitized,
+    )
+    assert inspect_result.returncode == 0, inspect_result.stderr
+
+    source = image
+    for stage in ("extract", "scale", "pixelize"):
+        output = outputs[stage]
+        result = _run(
+            [console, stage, source, "--config", config, "--output", output],
+            cwd=working_directory,
+            environment=sanitized,
+        )
+        assert result.returncode == 0, result.stderr
+        _validate_prior_stage_artifacts(output, stage)
+        source = output
+
+    result = _run(
+        [console, "align", source, "--config", config, "--output", outputs["align"]],
+        cwd=working_directory,
+        environment=sanitized,
+    )
+    assert not outputs["align"].exists()
+    return result
+
+
 def _corrupt_align_implementation(source: Path, destination: Path) -> None:
     with zipfile.ZipFile(source) as wheel:
         infos = wheel.infolist()
         files = {info.filename: wheel.read(info) for info in infos}
-    align_path = "pixipix/stages/align/__init__.py"
+    align_path = "pixipix/stages/align/execution.py"
     original = files[align_path]
-    needle = b"def compose_aligned_canvas("
-    replacement = b"def corrupted_compose_aligned_canvas("
+    needle = b"    if pixels.ndim != 3 or pixels.shape[2] != 4 or pixels.dtype != np.uint8:\n"
+    replacement = (
+        b'    raise RuntimeError("simulated installed align execution corruption")\n' + needle
+    )
     assert original.count(needle) == 1
     files[align_path] = original.replace(needle, replacement, 1)
 
@@ -190,7 +313,16 @@ def test_wheel_contains_align_package_member_only(
 
     with zipfile.ZipFile(wheel) as archive:
         members = set(archive.namelist())
-    assert "pixipix/stages/align/__init__.py" in members
+    expected_align_members = {
+        "pixipix/stages/align/__init__.py",
+        "pixipix/stages/align/api.py",
+        "pixipix/stages/align/execution.py",
+        "pixipix/stages/align/geometry.py",
+        "pixipix/stages/align/planning.py",
+    }
+    assert {member for member in members if member.startswith("pixipix/stages/align")} == (
+        expected_align_members
+    )
     assert "pixipix/stages/align.py" not in members
 
 
@@ -313,14 +445,9 @@ def test_corrupted_installed_artifact_fails_at_align(
     corrupted = tmp_path / wheel.name
     _corrupt_align_implementation(wheel, corrupted)
 
-    result = _run_smoke(corrupted)
-    combined = result.stdout + result.stderr
+    result = _run_corrupted_installed_pipeline(corrupted, tmp_path / "installed")
 
-    assert result.returncode != 0
-    assert "distribution smoke completed stage inspect" in result.stdout
-    assert "distribution smoke completed stage extract" in result.stdout
-    assert "distribution smoke completed stage scale" in result.stdout
-    assert "distribution smoke completed stage pixelize" in result.stdout
-    assert "distribution smoke completed stage align" not in result.stdout
-    assert "distribution smoke failed during align" in combined
-    assert "PX_INTERNAL_001" in combined
+    assert result.returncode == 4
+    assert result.stdout == ""
+    assert "PX_INTERNAL_001" in result.stderr
+    assert "Traceback" not in result.stderr
