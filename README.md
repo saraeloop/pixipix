@@ -113,7 +113,7 @@ baseline_y = 44
 clip_policy = "error"
 
 [frame_offsets.frame-b]
-dx = 1
+dx = 2
 dy = -1
 ```
 
@@ -184,9 +184,8 @@ pixipix scale INPUT_DIR --config CONFIG --output OUTPUT [--force] [--show-warnin
 Consumes a valid extraction-stage directory and applies one global scale factor to
 every frame in source pixel space. Reference modes derive the factor from one named
 frame and set its configured width or height target exactly. Optional, explicit
-per-frame multipliers are recorded and always produce warnings. Scaling uses BOX over
-float32 premultiplied RGBA channels, then deterministically un-premultiplies and
-normalizes transparent pixels to prevent dark fringes.
+per-frame multipliers are recorded and always produce warnings. Scaling preserves
+transparent edges without dark fringing.
 
 ### `pixipix pixelize`
 
@@ -246,10 +245,10 @@ max_modeled_peak_live_bytes = 1000000000
 These are the defaults. Each value must be a positive integer. The fixed absolute caps
 are:
 
-| Key | Default | Absolute cap |
-| --- | ---: | ---: |
-| `max_aggregate_input_pixels` | 50,000,000 | 150,000,000 |
-| `max_aggregate_output_pixels` | 60,000,000 | 160,000,000 |
+| Key                           |       Default |  Absolute cap |
+| ----------------------------- | ------------: | ------------: |
+| `max_aggregate_input_pixels`  |    50,000,000 |   150,000,000 |
+| `max_aggregate_output_pixels` |    60,000,000 |   160,000,000 |
 | `max_modeled_peak_live_bytes` | 1,000,000,000 | 2,000,000,000 |
 
 The exact cap is accepted; cap plus one is rejected as invalid configuration. Budgets
@@ -322,11 +321,10 @@ alpha_threshold = 8
 sample_corners = true
 ```
 
-Color modes use normalized maximum per-channel distance. The largest absolute channel
-difference divided by 255 must be less than or equal to `tolerance`. Six-digit colors
-compare RGB; eight-digit colors compare RGBA. Corner mode compares RGBA samples and
-fails if the corners disagree beyond tolerance. Pixels below `alpha_threshold` are
-always background.
+Color modes compare each channel against `tolerance`, a normalized value from `0.0`
+through `1.0`. Six-digit colors compare RGB; eight-digit colors compare RGBA. Corner
+mode compares RGBA samples and fails if the corners disagree beyond tolerance. Pixels
+below `alpha_threshold` are always background.
 
 ### Extraction
 
@@ -341,6 +339,10 @@ row_tolerance = 2
 
 Components smaller than `minimum_area` or larger than `maximum_area` remain visible in
 inspection and stage metadata as rejected components.
+
+Accepted components are ordered deterministically into reading-order rows.
+`row_tolerance` sets how far a component's top coordinate may differ from an existing
+row and still join it, inclusive.
 
 ### Frame names
 
@@ -372,10 +374,10 @@ reference_frame = "frame-a"
 target_size = 24                # logical pixels
 ```
 
-Reference modes use `target_size × pixelize.source_cell_size` as the exact source-space
-target. All other dimensions use the same factor with round-half-away-from-zero;
-non-empty dimensions remain at least one source pixel. A reference frame cannot have
-an override. An exceptional non-reference correction is explicit and warned:
+Reference modes require `pixelize.source_cell_size` and give the reference frame the
+configured logical target exactly. All other dimensions use the same factor; non-empty
+dimensions remain at least one source pixel. A reference frame cannot have an override.
+An exceptional non-reference correction is explicit and warned:
 
 ```toml
 [frame_overrides.frame-b]
@@ -396,9 +398,9 @@ remainder_policy = "pad-transparent"
 ```
 
 `source_cell_size` is required by `pixelize` and by reference scaling. Representative
-strategies are exact RGBA `majority` with first row-major tie-breaking, locked `center`
-sampling, and the default `alpha-weighted-majority`, which ignores transparent RGB and
-weights visible RGB groups by alpha. Alpha is either `binary` at the configured
+strategies are exact RGBA `majority`, locked `center` sampling, and the default
+`alpha-weighted-majority`, which ignores transparent RGB and weights visible RGB groups
+by alpha. Ties resolve deterministically. Alpha is either `binary` at the configured
 inclusive threshold or explicitly `preserve`d as the selected-color opacity.
 
 Remainder policies are `pad-transparent` (minimal top/right transparent-black padding),
@@ -429,14 +431,10 @@ anchors, `baseline_y` is the boundary where the input frame's bottom edge lands 
 offsets; it defaults to `frame_height` and may range from zero through `frame_height`,
 inclusive. Non-bottom anchors reject `baseline_y`.
 
-Center placement uses mathematical floor:
+Center placement is exact when the difference between canvas and input size is even.
+An odd difference leaves the extra transparent pixel on the right or bottom, including
+when an input is larger than its canvas.
 
-```text
-floor((canvas_size - input_size) / 2)
-```
-
-An odd remainder leaves the extra transparent pixel on the right or bottom. The same
-floor rule applies to negative differences when an input is larger than its canvas.
 Explicit integer frame offsets apply after anchor placement. A declared offset must
 change at least one axis; `{dx = 0, dy = 0}` is rejected during configuration validation,
 and every valid declared offset contributes one deterministic alignment warning when
@@ -520,27 +518,22 @@ PixiPix does not merge new files into stale output:
 
 ## Determinism
 
-Component discovery scans pixels in row-major order. Four-connectivity visits up,
-left, right, then down. Eight-connectivity visits up-left, up, up-right, left, right,
-down-left, down, then down-right.
+The same input, the same effective configuration, and the same PixiPix version
+produce the same artifact bytes, the same metadata, and the same warning order.
+This holds across runs, machines, and supported platforms.
 
-Accepted components are first sorted by top, left, ascending area, and discovery index.
-Each row is anchored to the top coordinate of its first component; another component
-joins the first existing row whose anchor differs by at most `row_tolerance` (inclusive).
-The fixed anchor prevents pairwise chaining from merging distant rows. Rows are ordered
-by anchor top; components within a row use left, ascending area, then discovery index.
+Concretely:
 
-JSON uses sorted keys, two-space indentation, UTF-8, finite numbers, Unix-style relative
-paths, and exactly one trailing newline. PNG output is RGBA, excludes source metadata,
-uses explicit compression settings, and zeroes RGB channels for fully transparent
-pixels.
+- component discovery, ordering, and frame assignment are fully deterministic
+- rounding and tie-breaking follow fixed rules rather than platform or library defaults
+- JSON uses sorted keys, two-space indentation, UTF-8, finite numbers, Unix-style
+  relative paths, and exactly one trailing newline
+- PNG output is RGBA, excludes source metadata, uses explicit compression settings,
+  and zeroes RGB channels for fully transparent pixels
+- `scale` followed by `pixelize` is the canonical path
 
-Geometric and channel quantization use separate round-half-away-from-zero helpers.
-Scale BOX filtering operates on float32 premultiplied red, green, blue, and alpha
-channels; un-premultiplication occurs in float64 and channels are quantized once.
-Fully opaque input uses the equivalent native RGBA BOX path for ordinary BOX identity.
-Pixel representatives use fixed row-major tie rules. Sequential `scale` then `pixelize`
-is the canonical path; no fused implementation exists.
+Determinism is enforced by a tracked parity suite covering CLI output, warnings,
+metadata, PNG bytes, and output tree hashes.
 
 ## Exit codes
 
@@ -562,9 +555,9 @@ Expected domain failures do not print tracebacks.
 - explicit source-cell size; no source-cell inference or automatic frame normalization
 - explicit fixed canvas and placement; no automatic canvas, anchor, baseline, or offset
   inference
-- no palette processing, recoloring, atlas packing, final manifest/report, animation
+- no palette processing, recoloring, atlas packing, manifest reporting, animation
   generation, or editor integration
-- no end-to-end `build` command yet
+- no end-to-end `build` command
 
 ## Development
 
