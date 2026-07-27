@@ -20,16 +20,18 @@ from pixipix.models import (
     ScaleStageMetadata,
     UInt8Image,
 )
-from pixipix.resources import ResourceProjection, enforce_resource_policy
-from pixipix.stages.io import (
+from pixipix.pipeline.input import (
     LoadedStageInput,
-    OutputFrameImage,
     ValidatedStageInput,
     decode_stage_input,
-    publish_stage_output,
     validate_stage_input,
+)
+from pixipix.pipeline.publication import (
+    OutputFrameImage,
+    publish_stage_output,
     validate_stage_output_target,
 )
+from pixipix.resources import ResourceProjection, enforce_resource_policy
 
 MAX_TRANSFORMED_PIXELS = 16_777_216
 

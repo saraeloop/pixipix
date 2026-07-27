@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import pixipix.stages.io as stage_io
+import pixipix.pipeline.publication as pipeline_publication
 from pixipix.config import load_config
 from pixipix.errors import (
     AlignmentClippingError,
@@ -432,7 +432,7 @@ def test_align_staged_write_failure_cleans_temporary_output(
     def fail_write(_path: Path, _pixels: object) -> None:
         raise ProcessingError("PX_TEST", "encode", "simulated failure")
 
-    monkeypatch.setattr(stage_io, "write_png", fail_write)
+    monkeypatch.setattr(pipeline_publication, "write_png", fail_write)
     with pytest.raises(ProcessingError, match="PX_TEST"):
         publish_align(pixelized, load_config(config), output)
     assert not output.exists()
@@ -472,7 +472,7 @@ def test_prior_png_header_is_validated_before_pixel_decode(
         def load(self) -> None:
             raise AssertionError("pixel decode occurred before header validation")
 
-    monkeypatch.setattr("pixipix.stages.io.Image.open", lambda _path: MismatchedPng())
+    monkeypatch.setattr("pixipix.pipeline.input.Image.open", lambda _path: MismatchedPng())
     with pytest.raises(UnsupportedInputError, match="PX_STAGE_012"):
         publish_align(pixelized, load_config(config), tmp_path / "aligned")
 
@@ -485,7 +485,7 @@ def test_prior_png_decompression_bomb_is_unsupported_input(
     def fail_open(_path: Path) -> object:
         raise Image.DecompressionBombError("simulated oversized PNG")
 
-    monkeypatch.setattr("pixipix.stages.io.Image.open", fail_open)
+    monkeypatch.setattr("pixipix.pipeline.input.Image.open", fail_open)
     with pytest.raises(UnsupportedInputError, match="PX_STAGE_012"):
         publish_align(pixelized, load_config(config), tmp_path / "aligned")
 

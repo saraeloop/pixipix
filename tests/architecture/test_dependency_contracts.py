@@ -16,6 +16,31 @@ FOUNDATIONAL_MODULES = {
     "pixipix.resources",
     "pixipix.serialization",
 }
+PIPELINE_MODULES = {
+    "pixipix.pipeline",
+    "pixipix.pipeline.artifacts",
+    "pixipix.pipeline.input",
+    "pixipix.pipeline.publication",
+}
+PIPELINE_ALLOWED_PIXIPIX_DEPENDENCIES = {
+    "pixipix.pipeline": set(),
+    "pixipix.pipeline.artifacts": {
+        "pixipix.errors",
+        "pixipix.models",
+    },
+    "pixipix.pipeline.input": {
+        "pixipix.errors",
+        "pixipix.models",
+        "pixipix.pipeline.artifacts",
+    },
+    "pixipix.pipeline.publication": {
+        "pixipix.errors",
+        "pixipix.imageio",
+        "pixipix.models",
+        "pixipix.pipeline.artifacts",
+        "pixipix.serialization",
+    },
+}
 STAGE_IMPLEMENTATIONS = {
     "pixipix.stages.extract",
     "pixipix.stages.scale",
@@ -55,17 +80,19 @@ ALIGN_ALLOWED_PIXIPIX_DEPENDENCIES = {
     "pixipix.stages.align.api": {
         "pixipix.config",
         "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.pipeline.publication",
         "pixipix.resources",
         "pixipix.stages.align.execution",
         "pixipix.stages.align.planning",
-        "pixipix.stages.io",
     },
     "pixipix.stages.align.execution": {
         "pixipix",
         "pixipix.config",
         "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.pipeline.publication",
         "pixipix.stages.align.planning",
-        "pixipix.stages.io",
     },
     "pixipix.stages.align.geometry": {
         "pixipix.config",
@@ -75,9 +102,9 @@ ALIGN_ALLOWED_PIXIPIX_DEPENDENCIES = {
         "pixipix.config",
         "pixipix.errors",
         "pixipix.models",
+        "pixipix.pipeline.input",
         "pixipix.resources",
         "pixipix.stages.align.geometry",
-        "pixipix.stages.io",
     },
 }
 ALIGN_ALLOWED_EXTERNAL_IMPORTS = {
@@ -87,18 +114,22 @@ ALIGN_ALLOWED_EXTERNAL_IMPORTS = {
     "pixipix.stages.align.geometry": {"__future__", "pathlib"},
     "pixipix.stages.align.planning": {"__future__", "dataclasses"},
 }
-ALIGN_ALLOWED_IO_SYMBOLS = {
-    "pixipix.stages.align.api": {
+ALIGN_ALLOWED_PIPELINE_SYMBOLS = {
+    ("pixipix.stages.align.api", "pixipix.pipeline.input"): {
         "decode_stage_input",
-        "publish_stage_output",
         "validate_stage_input",
+    },
+    ("pixipix.stages.align.api", "pixipix.pipeline.publication"): {
+        "publish_stage_output",
         "validate_stage_output_target",
     },
-    "pixipix.stages.align.execution": {
+    ("pixipix.stages.align.execution", "pixipix.pipeline.input"): {
         "LoadedStageInput",
+    },
+    ("pixipix.stages.align.execution", "pixipix.pipeline.publication"): {
         "OutputFrameImage",
     },
-    "pixipix.stages.align.planning": {
+    ("pixipix.stages.align.planning", "pixipix.pipeline.input"): {
         "ValidatedStageInput",
     },
 }
@@ -351,6 +382,19 @@ def test_foundational_modules_do_not_import_stages() -> None:
     )
 
 
+def test_foundational_modules_do_not_import_pipeline() -> None:
+    modules = {_module(path) for path in _production_files()}
+    violations = [
+        edge
+        for edge in _edges()
+        if edge.importer in FOUNDATIONAL_MODULES
+        and any(target in PIPELINE_MODULES for target in _target_modules(edge, modules))
+    ]
+    assert not violations, "\n".join(
+        _failure("foundational pipeline dependency direction", edge) for edge in violations
+    )
+
+
 def test_stages_io_does_not_import_stage_implementations() -> None:
     modules = {_module(path) for path in _production_files()}
     violations = [
@@ -361,6 +405,44 @@ def test_stages_io_does_not_import_stage_implementations() -> None:
     ]
     assert not violations, "\n".join(
         _failure("shared stage I/O direction", edge) for edge in violations
+    )
+
+
+def test_pipeline_module_set_and_dependency_direction_are_exact() -> None:
+    modules = {_module(path) for path in _production_files()}
+    actual_modules = {
+        module
+        for module in modules
+        if module == "pixipix.pipeline" or module.startswith("pixipix.pipeline.")
+    }
+    assert actual_modules == PIPELINE_MODULES, (
+        "pipeline module set differs: "
+        f"missing={sorted(PIPELINE_MODULES - actual_modules)}, "
+        f"unexpected={sorted(actual_modules - PIPELINE_MODULES)}"
+    )
+
+    violations: list[str] = []
+    for edge in _edges():
+        if edge.importer not in PIPELINE_MODULES:
+            continue
+        for target in _target_modules(edge, modules):
+            if (
+                target.startswith("pixipix")
+                and target not in PIPELINE_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
+            ):
+                violations.append(_failure("pipeline dependency direction", edge))
+    assert not violations, "\n".join(violations)
+
+
+def test_stage_implementations_do_not_import_stages_io_facade() -> None:
+    violations = [
+        edge
+        for edge in _edges()
+        if _stage_root(edge.importer) is not None and edge.imported == "pixipix.stages.io"
+    ]
+    assert not violations, "\n".join(
+        _failure("stage implementation compatibility-facade dependency", edge)
+        for edge in violations
     )
 
 
@@ -477,10 +559,11 @@ def test_align_internal_module_set_and_dependency_direction_are_exact() -> None:
             and edge.imported not in ALIGN_ALLOWED_EXTERNAL_IMPORTS[edge.importer]
         ):
             violations.append(_failure("align external capability", edge))
-        if edge.imported == "pixipix.stages.io" and (
-            set(edge.names) - ALIGN_ALLOWED_IO_SYMBOLS.get(edge.importer, set())
+        if edge.imported.startswith("pixipix.pipeline.") and (
+            set(edge.names)
+            - ALIGN_ALLOWED_PIPELINE_SYMBOLS.get((edge.importer, edge.imported), set())
         ):
-            violations.append(_failure("align shared I/O capability", edge))
+            violations.append(_failure("align shared pipeline capability", edge))
         for target in _target_modules(edge, modules):
             if target in ALIGN_MODULES:
                 internal_edges.add((edge.importer, target))

@@ -327,6 +327,74 @@ def test_wheel_contains_align_package_member_only(
 
 
 @pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
+def test_wheel_contains_exact_shared_pipeline_members(
+    built_artifacts: BuiltArtifacts, artifact_name: str
+) -> None:
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+    expected_members = {
+        "pixipix/pipeline/__init__.py": PROJECT_ROOT
+        / "src"
+        / "pixipix"
+        / "pipeline"
+        / "__init__.py",
+        "pixipix/pipeline/artifacts.py": PROJECT_ROOT
+        / "src"
+        / "pixipix"
+        / "pipeline"
+        / "artifacts.py",
+        "pixipix/pipeline/input.py": PROJECT_ROOT / "src" / "pixipix" / "pipeline" / "input.py",
+        "pixipix/pipeline/publication.py": PROJECT_ROOT
+        / "src"
+        / "pixipix"
+        / "pipeline"
+        / "publication.py",
+        "pixipix/stages/io.py": PROJECT_ROOT / "src" / "pixipix" / "stages" / "io.py",
+    }
+
+    with zipfile.ZipFile(wheel) as archive:
+        members = set(archive.namelist())
+        assert {member for member in members if member.startswith("pixipix/pipeline/")} == set(
+            expected_members
+        ) - {"pixipix/stages/io.py"}
+        for member, source in expected_members.items():
+            assert archive.read(member) == source.read_bytes()
+
+
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
+def test_wheel_shared_pipeline_imports_work_outside_checkout(
+    tmp_path: Path,
+    built_artifacts: BuiltArtifacts,
+    artifact_name: str,
+) -> None:
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+    working_directory = tmp_path / artifact_name
+    working_directory.mkdir()
+    code = (
+        "import pathlib, sys; "
+        "sys.path.insert(0, sys.argv[1]); "
+        "import pixipix.pipeline.input as pipeline_input; "
+        "import pixipix.pipeline.publication as publication; "
+        "import pixipix.stages.io as stage_io; "
+        "assert stage_io.load_stage_input is pipeline_input.load_stage_input; "
+        "assert stage_io._valid_owned_output is publication._valid_owned_output; "
+        "print(pathlib.Path(pipeline_input.__file__).resolve()); "
+        "print(pathlib.Path(publication.__file__).resolve()); "
+        "print(pathlib.Path(stage_io.__file__).resolve())"
+    )
+
+    result = _run(
+        [sys.executable, "-I", "-c", code, wheel.resolve()],
+        cwd=working_directory,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert str(wheel.resolve()) in result.stdout
+    assert str(PROJECT_ROOT.resolve()) not in result.stdout
+
+
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
 def test_installed_artifact_runs_complete_pipeline(
     built_artifacts: BuiltArtifacts, artifact_name: str
 ) -> None:

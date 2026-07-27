@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import pixipix.stages.io as stage_io
+import pixipix.pipeline.publication as pipeline_publication
 from pixipix.config import load_config
 from pixipix.errors import (
     ConfigurationError,
@@ -369,7 +369,7 @@ def test_new_stage_failed_staging_cleans_temporary_output(
     def fail_write(_path: Path, _pixels: object) -> None:
         raise ProcessingError("PX_TEST", "encode", "simulated failure")
 
-    monkeypatch.setattr(stage_io, "write_png", fail_write)
+    monkeypatch.setattr(pipeline_publication, "write_png", fail_write)
     with pytest.raises(ProcessingError, match="PX_TEST"):
         publish_scale(extracted, load_config(config), output)
     assert not output.exists()
@@ -598,7 +598,7 @@ def test_internal_staged_marker_validation_is_a_processing_failure(
         if path.name == ".pixipix-output":
             path.write_text("{", encoding="utf-8")
 
-    monkeypatch.setattr(stage_io, "write_json", corrupt_marker)
+    monkeypatch.setattr(pipeline_publication, "write_json", corrupt_marker)
     with pytest.raises(ProcessingError, match="PX_OUTPUT_006"):
         publish_scale(extracted, load_config(config), output)
     assert not output.exists()

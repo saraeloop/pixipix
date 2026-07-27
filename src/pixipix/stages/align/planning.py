@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from pixipix.config import LoadedConfig, OutputConfig
 from pixipix.errors import AlignmentClippingError, ConfigurationError, UnsupportedInputError
 from pixipix.models import AlignmentClippingFinding, AlignmentFrame, ProcessingWarning
+from pixipix.pipeline.input import ValidatedStageInput
 from pixipix.resources import ResourceProjection
 from pixipix.stages.align.geometry import calculate_alignment_frame
-from pixipix.stages.io import ValidatedStageInput
 
 
 @dataclass(frozen=True, slots=True)

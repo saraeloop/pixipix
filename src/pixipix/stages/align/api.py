@@ -6,15 +6,11 @@ from pathlib import Path
 
 from pixipix.config import LoadedConfig
 from pixipix.models import AlignmentStageMetadata
+from pixipix.pipeline.input import decode_stage_input, validate_stage_input
+from pixipix.pipeline.publication import publish_stage_output, validate_stage_output_target
 from pixipix.resources import enforce_resource_policy
 from pixipix.stages.align.execution import align_stage
 from pixipix.stages.align.planning import project_align_stage
-from pixipix.stages.io import (
-    decode_stage_input,
-    publish_stage_output,
-    validate_stage_input,
-    validate_stage_output_target,
-)
 
 
 def publish_align(
