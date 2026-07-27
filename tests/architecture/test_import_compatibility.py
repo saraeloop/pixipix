@@ -450,7 +450,7 @@ MATRIX = (
 
 PHYSICAL_LAYOUT = (
     PhysicalLayoutAssumption(
-        "pixipix/stages/align.py",
+        "pixipix/stages/align/__init__.py",
         "tests/release/test_smoke_distribution.py",
         "installed-wheel corruption member selected by exact archive path",
     ),
@@ -566,6 +566,19 @@ def test_monkeypatch_sensitive_bindings_resolve_at_current_paths() -> None:
     )
     for target in targets:
         assert _resolve_monkeypatch_target(target) is not None
+
+
+def test_align_consumer_import_path_resolves_to_package_member() -> None:
+    module = importlib.import_module("pixipix.stages.align")
+    assert module.__file__ is not None
+    module_file = Path(module.__file__).resolve()
+
+    assert module.__spec__ is not None
+    assert module.__spec__.submodule_search_locations is not None
+    assert module_file.relative_to(PROJECT_ROOT).as_posix() == (
+        "src/pixipix/stages/align/__init__.py"
+    )
+    assert not (PROJECT_ROOT / "src" / "pixipix" / "stages" / "align.py").exists()
 
 
 def test_installed_smoke_private_import_and_physical_member_are_explicit() -> None:

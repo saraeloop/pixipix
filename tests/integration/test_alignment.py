@@ -578,3 +578,23 @@ def test_warning_only_clipping_reaches_resource_refusal_before_decode(
     assert tuple(finding.kind for finding in raised.value.findings) == ("aggregate_input_pixels",)
     assert capsys.readouterr() == ("", "")
     assert not output.exists()
+
+
+def test_align_execution_uses_module_decoder_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, config, _, _, pixelized = _pipeline(tmp_path)
+    output = tmp_path / "aligned"
+
+    class PatchedDecoderUsed(Exception):
+        pass
+
+    def fail_decode(_validated: object) -> None:
+        raise PatchedDecoderUsed
+
+    monkeypatch.setattr("pixipix.stages.align.decode_stage_input", fail_decode)
+    with pytest.raises(PatchedDecoderUsed):
+        publish_align(pixelized, load_config(config), output)
+
+    assert not output.exists()
