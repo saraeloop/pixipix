@@ -9,8 +9,9 @@ import numpy as np
 from pixipix import __version__
 from pixipix.config import LoadedConfig
 from pixipix.models import AlignmentFrame, AlignmentStageMetadata, UInt8Image
+from pixipix.pipeline.input import LoadedStageInput
+from pixipix.pipeline.publication import OutputFrameImage
 from pixipix.stages.align.planning import AlignmentStagePlan, _require_output_config
-from pixipix.stages.io import LoadedStageInput, OutputFrameImage
 
 
 @dataclass(slots=True)

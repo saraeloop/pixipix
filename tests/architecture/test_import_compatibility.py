@@ -22,7 +22,9 @@ from tests.helpers import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-StageModule = Literal[
+CompatibilityModule = Literal[
+    "pixipix.pipeline.input",
+    "pixipix.pipeline.publication",
     "pixipix.stages.extract",
     "pixipix.stages.scale",
     "pixipix.stages.pixelize",
@@ -36,7 +38,7 @@ Classification = Literal["public", "internal", "private-but-consumed", "monkeypa
 
 @dataclass(frozen=True, slots=True)
 class CompatibilitySymbol:
-    module: StageModule
+    module: CompatibilityModule
     name: str
     consumers: tuple[str, ...]
     classification: Classification
@@ -52,7 +54,7 @@ class PhysicalLayoutAssumption:
 
 
 def _symbol(
-    module: StageModule,
+    module: CompatibilityModule,
     name: str,
     consumers: tuple[str, ...],
     classification: Classification,
@@ -374,8 +376,97 @@ MATRIX = (
         "monkeypatch-sensitive",
         signature="(validated: 'ValidatedStageInput') -> 'LoadedStageInput'",
     ),
+    _symbol("pixipix.pipeline.input", "InputStageFrame", ("facade",), "internal", "class"),
+    _symbol("pixipix.pipeline.input", "LoadedStageInput", ("production",), "internal", "class"),
+    _symbol("pixipix.pipeline.input", "ValidatedStageFrame", ("facade",), "internal", "class"),
+    _symbol("pixipix.pipeline.input", "ValidatedStageInput", ("production",), "internal", "class"),
+    _symbol(
+        "pixipix.pipeline.input",
+        "validate_stage_input",
+        ("production",),
+        "internal",
+        signature=(
+            "(root: 'Path', expected_stage: \"Literal['extract', 'scale', 'pixelize']\") "
+            "-> 'ValidatedStageInput'"
+        ),
+    ),
+    _symbol(
+        "pixipix.pipeline.input",
+        "decode_stage_input",
+        ("production",),
+        "internal",
+        signature="(validated: 'ValidatedStageInput') -> 'LoadedStageInput'",
+    ),
+    _symbol(
+        "pixipix.pipeline.input",
+        "load_stage_input",
+        ("facade",),
+        "internal",
+        signature=(
+            "(root: 'Path', expected_stage: \"Literal['extract', 'scale', 'pixelize']\") "
+            "-> 'LoadedStageInput'"
+        ),
+    ),
+    _symbol(
+        "pixipix.pipeline.input",
+        "Image",
+        ("monkeypatch",),
+        "monkeypatch-sensitive",
+        "value",
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
+        "OutputFrameImage",
+        ("production",),
+        "internal",
+        "class",
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
+        "validate_stage_output_target",
+        ("production",),
+        "internal",
+        signature=(
+            "(output: 'Path', stage: \"Literal['scale', 'pixelize', 'align']\", "
+            "*, force: 'bool' = False) -> 'None'"
+        ),
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
+        "publish_stage_output",
+        ("production",),
+        "internal",
+        signature=(
+            "(output: 'Path', stage: \"Literal['scale', 'pixelize', 'align']\", "
+            "metadata: 'object', frames: 'tuple[OutputFrameImage, ...]', "
+            "*, force: 'bool' = False) -> 'None'"
+        ),
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
+        "_valid_owned_output",
+        ("facade",),
+        "private-but-consumed",
+        signature="(path: 'Path', stage: 'StageName') -> 'bool'",
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
+        "write_json",
+        ("monkeypatch",),
+        "monkeypatch-sensitive",
+        signature="(path: 'Path', value: 'object') -> 'None'",
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
+        "write_png",
+        ("monkeypatch",),
+        "monkeypatch-sensitive",
+        signature="(path: 'Path', pixels: 'UInt8Image') -> 'None'",
+    ),
+    _symbol("pixipix.stages.io", "InputStageFrame", ("facade",), "internal", "class"),
     _symbol("pixipix.stages.io", "ValidatedStageInput", ("production",), "internal", "class"),
     _symbol("pixipix.stages.io", "LoadedStageInput", ("production",), "internal", "class"),
+    _symbol("pixipix.stages.io", "ValidatedStageFrame", ("facade",), "internal", "class"),
     _symbol("pixipix.stages.io", "OutputFrameImage", ("production",), "internal", "class"),
     _symbol(
         "pixipix.stages.io",
@@ -431,21 +522,6 @@ MATRIX = (
         ("smoke",),
         "private-but-consumed",
         signature="(path: 'Path', stage: 'StageName') -> 'bool'",
-    ),
-    _symbol("pixipix.stages.io", "Image", ("monkeypatch",), "monkeypatch-sensitive", "value"),
-    _symbol(
-        "pixipix.stages.io",
-        "write_json",
-        ("monkeypatch",),
-        "monkeypatch-sensitive",
-        signature="(path: 'Path', value: 'object') -> 'None'",
-    ),
-    _symbol(
-        "pixipix.stages.io",
-        "write_png",
-        ("monkeypatch",),
-        "monkeypatch-sensitive",
-        signature="(path: 'Path', pixels: 'UInt8Image') -> 'None'",
     ),
 )
 
@@ -561,9 +637,9 @@ def test_every_compatibility_symbol_imports_with_expected_shape() -> None:
 
 def test_monkeypatch_sensitive_bindings_resolve_at_current_paths() -> None:
     targets = (
-        "pixipix.stages.io:Image.open",
-        "pixipix.stages.io:write_json",
-        "pixipix.stages.io:write_png",
+        "pixipix.pipeline.input:Image.open",
+        "pixipix.pipeline.publication:write_json",
+        "pixipix.pipeline.publication:write_png",
         "pixipix.stages.extract:write_png",
         "pixipix.stages.extract:_materialize_frame_crop",
         "pixipix.stages.scale:decode_stage_input",
@@ -572,6 +648,69 @@ def test_monkeypatch_sensitive_bindings_resolve_at_current_paths() -> None:
     )
     for target in targets:
         assert _resolve_monkeypatch_target(target) is not None
+
+
+def test_stages_io_facade_reexports_exact_pipeline_objects() -> None:
+    facade = importlib.import_module("pixipix.stages.io")
+    pipeline_input = importlib.import_module("pixipix.pipeline.input")
+    publication = importlib.import_module("pixipix.pipeline.publication")
+    owners = {
+        "InputStageFrame": pipeline_input,
+        "LoadedStageInput": pipeline_input,
+        "ValidatedStageFrame": pipeline_input,
+        "ValidatedStageInput": pipeline_input,
+        "decode_stage_input": pipeline_input,
+        "load_stage_input": pipeline_input,
+        "validate_stage_input": pipeline_input,
+        "OutputFrameImage": publication,
+        "_valid_owned_output": publication,
+        "publish_stage_output": publication,
+        "validate_stage_output_target": publication,
+    }
+    for name, owner in owners.items():
+        assert getattr(facade, name) is getattr(owner, name)
+    assert not hasattr(facade, "Image")
+    assert not hasattr(facade, "write_json")
+    assert not hasattr(facade, "write_png")
+
+
+def test_stages_io_facade_is_static_and_definition_free() -> None:
+    facade_path = PROJECT_ROOT / "src" / "pixipix" / "stages" / "io.py"
+    tree = ast.parse(facade_path.read_text(encoding="utf-8"), filename=str(facade_path))
+    imports = [node for node in tree.body if isinstance(node, ast.ImportFrom)]
+    assert [
+        (node.level, node.module, tuple(alias.name for alias in node.names)) for node in imports
+    ] == [
+        (
+            2,
+            "pipeline.input",
+            (
+                "InputStageFrame",
+                "LoadedStageInput",
+                "ValidatedStageFrame",
+                "ValidatedStageInput",
+                "decode_stage_input",
+                "load_stage_input",
+                "validate_stage_input",
+            ),
+        ),
+        (
+            2,
+            "pipeline.publication",
+            (
+                "OutputFrameImage",
+                "_valid_owned_output",
+                "publish_stage_output",
+                "validate_stage_output_target",
+            ),
+        ),
+    ]
+    assert all(alias.asname == alias.name for node in imports for alias in node.names)
+    assert all(isinstance(node, (ast.Expr, ast.ImportFrom)) for node in tree.body)
+    assert not any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        for node in tree.body
+    )
 
 
 def test_align_consumer_import_path_resolves_to_package_member() -> None:
