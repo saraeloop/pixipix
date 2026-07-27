@@ -127,7 +127,7 @@ def _corrupt_align_implementation(source: Path, destination: Path) -> None:
     with zipfile.ZipFile(source) as wheel:
         infos = wheel.infolist()
         files = {info.filename: wheel.read(info) for info in infos}
-    align_path = "pixipix/stages/align.py"
+    align_path = "pixipix/stages/align/__init__.py"
     original = files[align_path]
     needle = b"def compose_aligned_canvas("
     replacement = b"def corrupted_compose_aligned_canvas("
@@ -179,6 +179,19 @@ def test_fixture_contract_is_static_and_configuration_reaches_align() -> None:
 
 def test_canonical_smoke_sequence_is_complete_and_ordered() -> None:
     assert SMOKE_STAGES == ("inspect", "extract", "scale", "pixelize", "align")
+
+
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
+def test_wheel_contains_align_package_member_only(
+    built_artifacts: BuiltArtifacts, artifact_name: str
+) -> None:
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+
+    with zipfile.ZipFile(wheel) as archive:
+        members = set(archive.namelist())
+    assert "pixipix/stages/align/__init__.py" in members
+    assert "pixipix/stages/align.py" not in members
 
 
 @pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
@@ -289,11 +302,16 @@ def test_failed_command_reports_exact_stage_and_process_output(tmp_path: Path) -
     assert "(7)" in str(captured.value)
 
 
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
 def test_corrupted_installed_artifact_fails_at_align(
-    tmp_path: Path, built_artifacts: BuiltArtifacts
+    tmp_path: Path,
+    built_artifacts: BuiltArtifacts,
+    artifact_name: str,
 ) -> None:
-    corrupted = tmp_path / built_artifacts.direct_wheel.name
-    _corrupt_align_implementation(built_artifacts.direct_wheel, corrupted)
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+    corrupted = tmp_path / wheel.name
+    _corrupt_align_implementation(wheel, corrupted)
 
     result = _run_smoke(corrupted)
     combined = result.stdout + result.stderr
