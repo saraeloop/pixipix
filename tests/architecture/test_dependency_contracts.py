@@ -677,6 +677,19 @@ def test_scale_api_orchestration_order_is_exact() -> None:
     ]
 
 
+def test_pixelize_package_is_one_monolithic_implementation_module() -> None:
+    package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize"
+    source_files = sorted(
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+
+    assert source_files == ["__init__.py"]
+    assert not (package.parent / "pixelize.py").exists()
+    assert _module(package / "__init__.py") == "pixipix.stages.pixelize"
+
+
 def test_scale_dependency_rule_rejects_module_and_root_import_bypasses() -> None:
     modules = {"pixipix", *SCALE_MODULES}
     cases = (

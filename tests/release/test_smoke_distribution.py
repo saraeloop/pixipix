@@ -356,6 +356,23 @@ def test_wheel_contains_exact_scale_package_members(
 
 
 @pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
+def test_wheel_contains_pixelize_package_member_only(
+    built_artifacts: BuiltArtifacts, artifact_name: str
+) -> None:
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+    source = PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize" / "__init__.py"
+
+    with zipfile.ZipFile(wheel) as archive:
+        members = set(archive.namelist())
+        assert {member for member in members if member.startswith("pixipix/stages/pixelize")} == {
+            "pixipix/stages/pixelize/__init__.py"
+        }
+        assert archive.read("pixipix/stages/pixelize/__init__.py") == source.read_bytes()
+    assert "pixipix/stages/pixelize.py" not in members
+
+
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
 def test_wheel_scale_and_pixelize_imports_work_outside_checkout(
     tmp_path: Path,
     built_artifacts: BuiltArtifacts,
@@ -375,6 +392,11 @@ def test_wheel_scale_and_pixelize_imports_work_outside_checkout(
         "import pixipix.stages.scale.geometry as geometry; "
         "import pixipix.stages.scale.metadata as metadata; "
         "import pixipix.stages.scale.planning as planning; "
+        "assert pathlib.Path(pixelize.__file__).name == '__init__.py'; "
+        "assert pixelize.__spec__.submodule_search_locations is not None; "
+        "assert pixelize.PixelizeStagePlan.__module__ == 'pixipix.stages.pixelize'; "
+        "assert pixelize.PixelizeRun.__module__ == 'pixipix.stages.pixelize'; "
+        "assert pixelize.publish_pixelize.__module__ == 'pixipix.stages.pixelize'; "
         "assert pixelize.round_channel_half_away_from_zero "
         "is scale.round_channel_half_away_from_zero; "
         "assert scale.publish_scale is api.publish_scale; "
@@ -400,6 +422,8 @@ def test_wheel_scale_and_pixelize_imports_work_outside_checkout(
         "assert not hasattr(scale, '_require_scale_config'); "
         "assert not hasattr(scale, '_resize_float_channel'); "
         "assert not hasattr(scale, 'build_scale_metadata'); "
+        "assert sys.modules['pixipix.stages.pixelize'] is pixelize; "
+        "assert 'pixipix.stages.pixelize.__init__' not in sys.modules; "
         "assert sys.modules['pixipix.stages.scale'] is scale; "
         "assert 'pixipix.stages.scale.__init__' not in sys.modules; "
         "print(pathlib.Path(scale.__file__).resolve()); "
