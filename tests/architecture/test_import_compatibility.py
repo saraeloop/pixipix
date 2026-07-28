@@ -889,6 +889,72 @@ def test_stage_plan_exports_are_the_exact_types_constructed_by_planners(
     assert type(align_plan) is AlignmentStagePlan
 
 
+def test_pixelize_package_preserves_module_and_rounding_edge_identity() -> None:
+    package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize"
+    pixelize = importlib.import_module("pixipix.stages.pixelize")
+    scale = importlib.import_module("pixipix.stages.scale")
+    geometry = importlib.import_module("pixipix.stages.scale.geometry")
+    pixelize_file = pixelize.__file__
+
+    assert pixelize_file is not None
+    assert Path(pixelize_file).resolve() == (package / "__init__.py").resolve()
+    assert pixelize.__spec__ is not None
+    assert pixelize.__spec__.submodule_search_locations is not None
+    for name in (
+        "PreparedCellGrid",
+        "CellGridProjection",
+        "PixelizeRun",
+        "PixelizeStagePlan",
+        "project_cell_grid",
+        "prepare_cell_grid",
+        "_majority",
+        "_center",
+        "_alpha_weighted_majority",
+        "representative_pixel",
+        "apply_alpha_policy",
+        "pixelize_prepared_grid",
+        "_require_pixelize_config",
+        "_validate_config_handoff",
+        "project_pixelize_resources",
+        "project_pixelize_stage",
+        "pixelize_stage",
+        "publish_pixelize",
+    ):
+        assert vars(pixelize)[name].__module__ == "pixipix.stages.pixelize"
+    assert (
+        vars(pixelize)["round_channel_half_away_from_zero"]
+        is vars(scale)["round_channel_half_away_from_zero"]
+        is vars(geometry)["round_channel_half_away_from_zero"]
+    )
+    assert sys.modules["pixipix.stages.pixelize"] is pixelize
+    assert "pixipix.stages.pixelize.__init__" not in sys.modules
+
+    code = (
+        "import pathlib, sys; "
+        "import pixipix.stages.pixelize as pixelize; "
+        "import pixipix.stages.scale as scale; "
+        "import pixipix.stages.scale.geometry as geometry; "
+        "assert pathlib.Path(pixelize.__file__).name == '__init__.py'; "
+        "assert pixelize.__spec__.submodule_search_locations is not None; "
+        "assert pixelize.PixelizeStagePlan.__module__ == 'pixipix.stages.pixelize'; "
+        "assert pixelize.PixelizeRun.__module__ == 'pixipix.stages.pixelize'; "
+        "assert pixelize.publish_pixelize.__module__ == 'pixipix.stages.pixelize'; "
+        "assert pixelize.round_channel_half_away_from_zero "
+        "is scale.round_channel_half_away_from_zero "
+        "is geometry.round_channel_half_away_from_zero; "
+        "assert sys.modules['pixipix.stages.pixelize'] is pixelize; "
+        "assert 'pixipix.stages.pixelize.__init__' not in sys.modules"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_scale_facade_reexports_exact_internal_objects() -> None:
     package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale"
     scale = importlib.import_module("pixipix.stages.scale")

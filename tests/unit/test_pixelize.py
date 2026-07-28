@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +22,22 @@ from pixipix.stages.pixelize import (
 from tests.helpers import pipeline_config, write_config, write_declared_scale_stage
 
 
+class _PixelizeNumpyProxy:
+    def __init__(self, pad: Callable[..., object]) -> None:
+        self.pad = pad
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(np, name)
+
+
+def _patch_pixelize_pad(
+    monkeypatch: pytest.MonkeyPatch,
+    pad: Callable[..., object],
+) -> None:
+    pixelize = sys.modules["pixipix.stages.pixelize"]
+    monkeypatch.setitem(vars(pixelize), "np", _PixelizeNumpyProxy(pad))
+
+
 def test_scenario_i_padding_exactly() -> None:
     pixels = np.ones((19, 25, 4), dtype=np.uint8)
     prepared = prepare_cell_grid(pixels, 6, "pad-transparent", "shape")
@@ -31,6 +49,29 @@ def test_scenario_i_padding_exactly() -> None:
     assert np.array_equal(prepared.pixels[5:, :25], pixels)
     logical = pixelize_prepared_grid(prepared.pixels, 6, "center", "preserve", 128)
     assert logical.shape == (4, 5, 4)
+
+
+def test_pad_transparent_uses_pixelize_module_numpy_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pixels = np.ones((1, 1, 4), dtype=np.uint8)
+
+    class PixelizePadReached(Exception):
+        pass
+
+    def mark_pad(*_args: object, **_kwargs: object) -> None:
+        raise PixelizePadReached("pixelize module np.pad reached")
+
+    global_pad = np.pad
+    _patch_pixelize_pad(monkeypatch, mark_pad)
+
+    with pytest.raises(PixelizePadReached, match=r"pixelize module np\.pad reached") as raised:
+        prepare_cell_grid(pixels, 2, "pad-transparent", "frame")
+
+    traceback_names = tuple(entry.name for entry in raised.traceback)
+    assert "prepare_cell_grid" in traceback_names
+    assert traceback_names[-1] == "mark_pad"
+    assert np.pad is global_pad
 
 
 @pytest.mark.parametrize(

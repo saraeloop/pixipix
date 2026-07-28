@@ -452,6 +452,49 @@ def test_metadata_only_resource_scenarios_refuse_before_decode(
     assert not output.exists()
 
 
+def test_admitted_pixelize_uses_package_decoder_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "admitted.toml"
+    write_config(
+        config,
+        pipeline_config(
+            names=("tiny",),
+            scale='mode = "explicit-factor"\nfactor = 1.0',
+        ),
+    )
+    loaded = load_config(config)
+    input_root = tmp_path / "admitted-scale"
+    output = tmp_path / "admitted-output"
+    write_declared_scale_stage(
+        input_root,
+        loaded,
+        ((1, 1),),
+        ((1, 1),),
+        factor=1.0,
+    )
+
+    class PixelizeDecoderReached(Exception):
+        pass
+
+    def mark_decode(_validated: object) -> None:
+        raise PixelizeDecoderReached("pixelize package decoder binding reached")
+
+    monkeypatch.setattr("pixipix.stages.pixelize.decode_stage_input", mark_decode)
+
+    with pytest.raises(
+        PixelizeDecoderReached,
+        match="pixelize package decoder binding reached",
+    ) as raised:
+        publish_pixelize(input_root, loaded, output)
+
+    traceback_names = tuple(entry.name for entry in raised.traceback)
+    assert "publish_pixelize" in traceback_names
+    assert traceback_names[-1] == "mark_decode"
+    assert not output.exists()
+
+
 def test_admitted_metadata_with_malformed_png_reaches_decoder(tmp_path: Path) -> None:
     config = tmp_path / "admitted.toml"
     write_config(
