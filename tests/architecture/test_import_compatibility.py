@@ -29,6 +29,7 @@ CompatibilityModule = Literal[
     "pixipix.pipeline.publication",
     "pixipix.stages.extract",
     "pixipix.stages.scale",
+    "pixipix.stages.scale.api",
     "pixipix.stages.pixelize",
     "pixipix.stages.align",
     "pixipix.stages.align.api",
@@ -178,6 +179,31 @@ MATRIX = (
     ),
     _symbol(
         "pixipix.stages.scale",
+        "ScaleRun",
+        ("compatibility",),
+        "internal",
+        "class",
+        "(metadata: 'ScaleStageMetadata', frame_images: 'tuple[OutputFrameImage, ...]') -> None",
+    ),
+    _symbol(
+        "pixipix.stages.scale",
+        "MAX_TRANSFORMED_PIXELS",
+        ("compatibility",),
+        "internal",
+        "value",
+    ),
+    _symbol(
+        "pixipix.stages.scale",
+        "scale_stage",
+        ("compatibility",),
+        "internal",
+        signature=(
+            "(stage: 'LoadedStageInput', loaded: 'LoadedConfig', plan: 'ScaleStagePlan') "
+            "-> 'ScaleRun'"
+        ),
+    ),
+    _symbol(
+        "pixipix.stages.scale",
         "publish_scale",
         ("production", "tests"),
         "internal",
@@ -227,7 +253,7 @@ MATRIX = (
         signature="(source_dimension: 'int', factor: 'float') -> 'int'",
     ),
     _symbol(
-        "pixipix.stages.scale",
+        "pixipix.stages.scale.api",
         "decode_stage_input",
         ("monkeypatch",),
         "monkeypatch-sensitive",
@@ -644,7 +670,7 @@ def test_monkeypatch_sensitive_bindings_resolve_at_current_paths() -> None:
         "pixipix.pipeline.publication:write_png",
         "pixipix.stages.extract:write_png",
         "pixipix.stages.extract:_materialize_frame_crop",
-        "pixipix.stages.scale:decode_stage_input",
+        "pixipix.stages.scale.api:decode_stage_input",
         "pixipix.stages.pixelize:decode_stage_input",
         "pixipix.stages.align.api:decode_stage_input",
     )
@@ -863,20 +889,54 @@ def test_stage_plan_exports_are_the_exact_types_constructed_by_planners(
     assert type(align_plan) is AlignmentStagePlan
 
 
-def test_scale_package_preserves_module_and_rounding_edge_identity() -> None:
+def test_scale_facade_reexports_exact_internal_objects() -> None:
     package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale"
     scale = importlib.import_module("pixipix.stages.scale")
+    api = importlib.import_module("pixipix.stages.scale.api")
+    execution = importlib.import_module("pixipix.stages.scale.execution")
+    geometry = importlib.import_module("pixipix.stages.scale.geometry")
+    metadata = importlib.import_module("pixipix.stages.scale.metadata")
+    planning = importlib.import_module("pixipix.stages.scale.planning")
     pixelize = importlib.import_module("pixipix.stages.pixelize")
     scale_file = scale.__file__
 
     assert scale_file is not None
     assert Path(scale_file).resolve() == (package / "__init__.py").resolve()
-    for name in (
-        "ScaleStagePlan",
-        "publish_scale",
-        "round_channel_half_away_from_zero",
+    owners = {
+        "publish_scale": api,
+        "ScaleRun": execution,
+        "scale_stage": execution,
+        "premultiplied_box_resize": execution,
+        "ScaleStagePlan": planning,
+        "MAX_TRANSFORMED_PIXELS": planning,
+        "project_scale_stage": planning,
+        "project_scale_resources": planning,
+        "round_half_away_from_zero": geometry,
+        "transformed_dimension": geometry,
+        "round_channel_half_away_from_zero": geometry,
+    }
+    for name, owner in owners.items():
+        assert getattr(scale, name) is getattr(owner, name)
+    for infrastructure_name in (
+        "decode_stage_input",
+        "Image",
+        "np",
+        "_require_scale_config",
+        "_resize_float_channel",
+        "build_scale_metadata",
     ):
-        assert vars(scale)[name].__module__ == "pixipix.stages.scale"
+        assert not hasattr(scale, infrastructure_name)
+    assert str(inspect.signature(metadata.build_scale_metadata)) == (
+        "(stage: 'LoadedStageInput', loaded: 'LoadedConfig', plan: 'ScaleStagePlan', "
+        "config: 'ScaleConfig') -> 'ScaleStageMetadata'"
+    )
+    assert str(inspect.signature(planning._validate_config_handoff)) == (
+        "(stage: 'ValidatedStageInput', loaded: 'LoadedConfig') -> 'None'"
+    )
+    assert str(inspect.signature(planning._global_factor)) == (
+        "(config: 'ScaleConfig', stage: 'ValidatedStageInput', "
+        "source_cell_size: 'int | None') -> 'tuple[float, int | None, int | None]'"
+    )
     assert (
         vars(pixelize)["round_channel_half_away_from_zero"]
         is vars(scale)["round_channel_half_away_from_zero"]
@@ -888,12 +948,27 @@ def test_scale_package_preserves_module_and_rounding_edge_identity() -> None:
         "import sys; "
         "import pixipix.stages.pixelize as pixelize; "
         "import pixipix.stages.scale as scale; "
+        "import pixipix.stages.scale.api as api; "
+        "import pixipix.stages.scale.execution as execution; "
+        "import pixipix.stages.scale.geometry as geometry; "
+        "import pixipix.stages.scale.planning as planning; "
         "assert pixelize.round_channel_half_away_from_zero "
         "is scale.round_channel_half_away_from_zero; "
-        "assert scale.ScaleStagePlan.__module__ == 'pixipix.stages.scale'; "
-        "assert scale.publish_scale.__module__ == 'pixipix.stages.scale'; "
+        "assert scale.ScaleRun is execution.ScaleRun; "
+        "assert scale.ScaleStagePlan is planning.ScaleStagePlan; "
+        "assert scale.publish_scale is api.publish_scale; "
+        "assert scale.round_channel_half_away_from_zero "
+        "is geometry.round_channel_half_away_from_zero; "
+        "assert scale.ScaleStagePlan.__module__ == 'pixipix.stages.scale.planning'; "
+        "assert scale.publish_scale.__module__ == 'pixipix.stages.scale.api'; "
         "assert scale.round_channel_half_away_from_zero.__module__ "
-        "== 'pixipix.stages.scale'; "
+        "== 'pixipix.stages.scale.geometry'; "
+        "assert not hasattr(scale, 'decode_stage_input'); "
+        "assert not hasattr(scale, 'Image'); "
+        "assert not hasattr(scale, 'np'); "
+        "assert not hasattr(scale, '_require_scale_config'); "
+        "assert not hasattr(scale, '_resize_float_channel'); "
+        "assert not hasattr(scale, 'build_scale_metadata'); "
         "assert sys.modules['pixipix.stages.scale'] is scale; "
         "assert 'pixipix.stages.scale.__init__' not in sys.modules"
     )
@@ -905,3 +980,42 @@ def test_scale_package_preserves_module_and_rounding_edge_identity() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_scale_facade_is_relative_grouped_and_definition_free() -> None:
+    facade_path = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale" / "__init__.py"
+    tree = ast.parse(facade_path.read_text(encoding="utf-8"), filename=str(facade_path))
+    relative_imports = [
+        node for node in tree.body if isinstance(node, ast.ImportFrom) and node.level
+    ]
+    expected = {
+        "api": ("publish_scale",),
+        "execution": ("ScaleRun", "premultiplied_box_resize", "scale_stage"),
+        "geometry": (
+            "round_channel_half_away_from_zero",
+            "round_half_away_from_zero",
+            "transformed_dimension",
+        ),
+        "planning": (
+            "MAX_TRANSFORMED_PIXELS",
+            "ScaleStagePlan",
+            "project_scale_resources",
+            "project_scale_stage",
+        ),
+    }
+
+    assert {
+        node.module: tuple(alias.name for alias in node.names) for node in relative_imports
+    } == expected
+    assert all(node.level == 1 for node in relative_imports)
+    assert all(alias.asname == alias.name for node in relative_imports for alias in node.names)
+    assert all(isinstance(node, (ast.Expr, ast.ImportFrom)) for node in tree.body)
+    assert all(
+        isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+        for node in tree.body
+        if isinstance(node, ast.Expr)
+    )
+    assert not any(
+        isinstance(node, (ast.Assign, ast.AnnAssign, ast.FunctionDef, ast.ClassDef))
+        for node in tree.body
+    )

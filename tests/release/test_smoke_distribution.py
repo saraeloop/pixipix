@@ -327,19 +327,31 @@ def test_wheel_contains_align_package_member_only(
 
 
 @pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
-def test_wheel_contains_scale_package_member_only(
+def test_wheel_contains_exact_scale_package_members(
     built_artifacts: BuiltArtifacts, artifact_name: str
 ) -> None:
     wheel = getattr(built_artifacts, artifact_name)
     assert isinstance(wheel, Path)
-    source = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale" / "__init__.py"
+    source_root = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale"
+    expected_members = {
+        f"pixipix/stages/scale/{name}": source_root / name
+        for name in (
+            "__init__.py",
+            "api.py",
+            "execution.py",
+            "geometry.py",
+            "metadata.py",
+            "planning.py",
+        )
+    }
 
     with zipfile.ZipFile(wheel) as archive:
         members = set(archive.namelist())
-        assert {member for member in members if member.startswith("pixipix/stages/scale")} == {
-            "pixipix/stages/scale/__init__.py"
-        }
-        assert archive.read("pixipix/stages/scale/__init__.py") == source.read_bytes()
+        assert {member for member in members if member.startswith("pixipix/stages/scale")} == set(
+            expected_members
+        )
+        for member, source in expected_members.items():
+            assert archive.read(member) == source.read_bytes()
     assert "pixipix/stages/scale.py" not in members
 
 
@@ -358,13 +370,36 @@ def test_wheel_scale_and_pixelize_imports_work_outside_checkout(
         "sys.path.insert(0, sys.argv[1]); "
         "import pixipix.stages.pixelize as pixelize; "
         "import pixipix.stages.scale as scale; "
+        "import pixipix.stages.scale.api as api; "
+        "import pixipix.stages.scale.execution as execution; "
+        "import pixipix.stages.scale.geometry as geometry; "
+        "import pixipix.stages.scale.metadata as metadata; "
+        "import pixipix.stages.scale.planning as planning; "
         "assert pixelize.round_channel_half_away_from_zero "
         "is scale.round_channel_half_away_from_zero; "
-        "assert callable(scale.round_channel_half_away_from_zero); "
-        "assert scale.ScaleStagePlan.__module__ == 'pixipix.stages.scale'; "
-        "assert scale.publish_scale.__module__ == 'pixipix.stages.scale'; "
+        "assert scale.publish_scale is api.publish_scale; "
+        "assert scale.ScaleRun is execution.ScaleRun; "
+        "assert scale.scale_stage is execution.scale_stage; "
+        "assert scale.premultiplied_box_resize is execution.premultiplied_box_resize; "
+        "assert scale.ScaleStagePlan is planning.ScaleStagePlan; "
+        "assert scale.MAX_TRANSFORMED_PIXELS is planning.MAX_TRANSFORMED_PIXELS; "
+        "assert scale.project_scale_stage is planning.project_scale_stage; "
+        "assert scale.project_scale_resources is planning.project_scale_resources; "
+        "assert scale.round_half_away_from_zero is geometry.round_half_away_from_zero; "
+        "assert scale.transformed_dimension is geometry.transformed_dimension; "
+        "assert scale.round_channel_half_away_from_zero "
+        "is geometry.round_channel_half_away_from_zero; "
+        "assert callable(metadata.build_scale_metadata); "
+        "assert scale.ScaleStagePlan.__module__ == 'pixipix.stages.scale.planning'; "
+        "assert scale.publish_scale.__module__ == 'pixipix.stages.scale.api'; "
         "assert scale.round_channel_half_away_from_zero.__module__ "
-        "== 'pixipix.stages.scale'; "
+        "== 'pixipix.stages.scale.geometry'; "
+        "assert not hasattr(scale, 'decode_stage_input'); "
+        "assert not hasattr(scale, 'Image'); "
+        "assert not hasattr(scale, 'np'); "
+        "assert not hasattr(scale, '_require_scale_config'); "
+        "assert not hasattr(scale, '_resize_float_channel'); "
+        "assert not hasattr(scale, 'build_scale_metadata'); "
         "assert sys.modules['pixipix.stages.scale'] is scale; "
         "assert 'pixipix.stages.scale.__init__' not in sys.modules; "
         "print(pathlib.Path(scale.__file__).resolve()); "

@@ -10,6 +10,7 @@ import pytest
 
 import pixipix.pipeline.input as pipeline_input
 import pixipix.stages.scale as scale_stage
+import pixipix.stages.scale.api as scale_api
 from pixipix.config import load_config
 from pixipix.errors import PixiPixError, ProcessingError, UnsupportedInputError
 from pixipix.pipeline.input import LoadedStageInput, load_stage_input
@@ -168,11 +169,11 @@ def test_combined_invalid_inputs_preserve_first_error_and_avoid_decode(
         raise AssertionError("decode must not run before metadata admission")
 
     def fail_scale_decode(_validated: object) -> None:
-        decode_calls.append("pixipix.stages.scale.decode_stage_input")
+        decode_calls.append("pixipix.stages.scale.api.decode_stage_input")
         raise AssertionError("stage decode must not run before metadata admission")
 
     monkeypatch.setattr("pixipix.pipeline.input.Image.open", fail_image_open)
-    monkeypatch.setattr(scale_stage, "decode_stage_input", fail_scale_decode)
+    monkeypatch.setattr(scale_api, "decode_stage_input", fail_scale_decode)
 
     with pytest.raises(UnsupportedInputError) as captured:
         if case == "identity_and_resource":
