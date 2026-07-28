@@ -429,7 +429,7 @@ def test_metadata_only_resource_scenarios_refuse_before_decode(
     if stage == "pixelize":
         monkeypatch.setattr("pixipix.stages.pixelize.decode_stage_input", fail_decode)
     else:
-        monkeypatch.setattr("pixipix.stages.scale.decode_stage_input", fail_decode)
+        monkeypatch.setattr("pixipix.stages.scale.api.decode_stage_input", fail_decode)
 
     def operation() -> object:
         if stage == "pixelize":
@@ -541,7 +541,7 @@ def test_mixed_resource_policy_lineage_fails_identity_before_decode(
     def fail_decode(_validated: object) -> None:
         raise AssertionError("decoder must not run for an identity refusal")
 
-    monkeypatch.setattr("pixipix.stages.scale.decode_stage_input", fail_decode)
+    monkeypatch.setattr("pixipix.stages.scale.api.decode_stage_input", fail_decode)
     with pytest.raises(ConfigurationError, match="PX_SCALE_CONFIG_002"):
         publish_scale(input_root, changed, tmp_path / "scaled")
 
@@ -582,7 +582,7 @@ def test_raised_byte_budget_admits_scenario_g_to_decoder(
     def mark_decode(_validated: object) -> None:
         raise DecodeReached
 
-    monkeypatch.setattr("pixipix.stages.scale.decode_stage_input", mark_decode)
+    monkeypatch.setattr("pixipix.stages.scale.api.decode_stage_input", mark_decode)
     with pytest.raises(DecodeReached):
         publish_scale(input_root, loaded, tmp_path / "scaled")
 

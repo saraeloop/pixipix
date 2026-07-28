@@ -133,6 +133,136 @@ ALIGN_ALLOWED_PIPELINE_SYMBOLS = {
         "ValidatedStageInput",
     },
 }
+SCALE_MODULES = {
+    "pixipix.stages.scale",
+    "pixipix.stages.scale.api",
+    "pixipix.stages.scale.execution",
+    "pixipix.stages.scale.geometry",
+    "pixipix.stages.scale.metadata",
+    "pixipix.stages.scale.planning",
+}
+SCALE_ALLOWED_INTERNAL_SYMBOLS = {
+    ("pixipix.stages.scale", "pixipix.stages.scale.api"): {
+        "publish_scale",
+    },
+    ("pixipix.stages.scale", "pixipix.stages.scale.execution"): {
+        "ScaleRun",
+        "premultiplied_box_resize",
+        "scale_stage",
+    },
+    ("pixipix.stages.scale", "pixipix.stages.scale.geometry"): {
+        "round_channel_half_away_from_zero",
+        "round_half_away_from_zero",
+        "transformed_dimension",
+    },
+    ("pixipix.stages.scale", "pixipix.stages.scale.planning"): {
+        "MAX_TRANSFORMED_PIXELS",
+        "ScaleStagePlan",
+        "project_scale_resources",
+        "project_scale_stage",
+    },
+    ("pixipix.stages.scale.api", "pixipix.stages.scale.execution"): {
+        "scale_stage",
+    },
+    ("pixipix.stages.scale.api", "pixipix.stages.scale.planning"): {
+        "project_scale_stage",
+    },
+    ("pixipix.stages.scale.execution", "pixipix.stages.scale.geometry"): {
+        "round_channel_half_away_from_zero",
+    },
+    ("pixipix.stages.scale.execution", "pixipix.stages.scale.metadata"): {
+        "build_scale_metadata",
+    },
+    ("pixipix.stages.scale.execution", "pixipix.stages.scale.planning"): {
+        "ScaleStagePlan",
+        "_require_scale_config",
+    },
+    ("pixipix.stages.scale.metadata", "pixipix.stages.scale.planning"): {
+        "ScaleStagePlan",
+    },
+    ("pixipix.stages.scale.planning", "pixipix.stages.scale.geometry"): {
+        "transformed_dimension",
+    },
+}
+SCALE_ALLOWED_PIXIPIX_DEPENDENCIES = {
+    "pixipix.stages.scale": {
+        "pixipix.stages.scale.api",
+        "pixipix.stages.scale.execution",
+        "pixipix.stages.scale.geometry",
+        "pixipix.stages.scale.planning",
+    },
+    "pixipix.stages.scale.api": {
+        "pixipix.config",
+        "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.pipeline.publication",
+        "pixipix.resources",
+        "pixipix.stages.scale.execution",
+        "pixipix.stages.scale.planning",
+    },
+    "pixipix.stages.scale.execution": {
+        "pixipix.config",
+        "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.pipeline.publication",
+        "pixipix.stages.scale.geometry",
+        "pixipix.stages.scale.metadata",
+        "pixipix.stages.scale.planning",
+    },
+    "pixipix.stages.scale.geometry": set(),
+    "pixipix.stages.scale.metadata": {
+        "pixipix",
+        "pixipix.config",
+        "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.stages.scale.planning",
+    },
+    "pixipix.stages.scale.planning": {
+        "pixipix.config",
+        "pixipix.errors",
+        "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.resources",
+        "pixipix.stages.scale.geometry",
+    },
+}
+SCALE_ALLOWED_EXTERNAL_IMPORTS = {
+    "pixipix.stages.scale": {"__future__"},
+    "pixipix.stages.scale.api": {"__future__", "pathlib"},
+    "pixipix.stages.scale.execution": {"__future__", "dataclasses", "numpy", "PIL"},
+    "pixipix.stages.scale.geometry": {"__future__", "math"},
+    "pixipix.stages.scale.metadata": {"__future__"},
+    "pixipix.stages.scale.planning": {"__future__", "dataclasses"},
+}
+SCALE_ALLOWED_ROOT_IMPORTS = {
+    (
+        "pixipix.stages.scale.metadata",
+        "pixipix",
+        ("__version__",),
+    ),
+}
+SCALE_ALLOWED_PIPELINE_SYMBOLS = {
+    ("pixipix.stages.scale.api", "pixipix.pipeline.input"): {
+        "decode_stage_input",
+        "validate_stage_input",
+    },
+    ("pixipix.stages.scale.api", "pixipix.pipeline.publication"): {
+        "publish_stage_output",
+        "validate_stage_output_target",
+    },
+    ("pixipix.stages.scale.execution", "pixipix.pipeline.input"): {
+        "LoadedStageInput",
+    },
+    ("pixipix.stages.scale.execution", "pixipix.pipeline.publication"): {
+        "OutputFrameImage",
+    },
+    ("pixipix.stages.scale.metadata", "pixipix.pipeline.input"): {
+        "LoadedStageInput",
+    },
+    ("pixipix.stages.scale.planning", "pixipix.pipeline.input"): {
+        "ValidatedStageInput",
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,20 +476,67 @@ def _failure(rule: str, edge: ImportEdge) -> str:
     return f"{rule}: {edge.importer} imports {edge.imported}{names} at production line {edge.line}"
 
 
+def _scale_dependency_violations(
+    edges: list[ImportEdge],
+    modules: set[str],
+) -> tuple[list[str], dict[tuple[str, str], set[str]], set[tuple[str, str, tuple[str, ...]]]]:
+    violations: list[str] = []
+    internal_symbols: dict[tuple[str, str], set[str]] = {}
+    root_imports: set[tuple[str, str, tuple[str, ...]]] = set()
+    for edge in edges:
+        if edge.importer not in SCALE_MODULES:
+            continue
+        if (
+            not edge.imported.startswith("pixipix")
+            and edge.imported not in SCALE_ALLOWED_EXTERNAL_IMPORTS[edge.importer]
+        ):
+            violations.append(_failure("scale external capability", edge))
+        if edge.imported == "pixipix":
+            root_import = (edge.importer, edge.imported, edge.names)
+            root_imports.add(root_import)
+            if root_import not in SCALE_ALLOWED_ROOT_IMPORTS:
+                violations.append(_failure("scale package-root capability", edge))
+        if edge.imported.startswith("pixipix.pipeline.") and (
+            set(edge.names)
+            - SCALE_ALLOWED_PIPELINE_SYMBOLS.get((edge.importer, edge.imported), set())
+        ):
+            violations.append(_failure("scale shared pipeline capability", edge))
+        for target in _target_modules(edge, modules):
+            if target in SCALE_MODULES:
+                key = (edge.importer, target)
+                internal_symbols.setdefault(key, set()).update(edge.names)
+                allowed_symbols = SCALE_ALLOWED_INTERNAL_SYMBOLS.get(key)
+                if allowed_symbols is None or not edge.names or set(edge.names) - allowed_symbols:
+                    violations.append(_failure("scale internal dependency direction", edge))
+            if (
+                target.startswith("pixipix")
+                and target not in SCALE_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
+            ):
+                violations.append(_failure("scale layer capability", edge))
+    return violations, internal_symbols, root_imports
+
+
 def test_only_cli_imports_stage_command_publishers() -> None:
     modules = {_module(path) for path in _production_files()}
-    facade_reexport = (
-        "pixipix.stages.align",
-        "pixipix.stages.align.api",
-        ("publish_align",),
-    )
+    facade_reexports = {
+        (
+            "pixipix.stages.align",
+            "pixipix.stages.align.api",
+            ("publish_align",),
+        ),
+        (
+            "pixipix.stages.scale",
+            "pixipix.stages.scale.api",
+            ("publish_scale",),
+        ),
+    }
     violations = [
         edge
         for edge in _edges()
         if any(_stage_root(target) for target in _target_modules(edge, modules))
         and STAGE_PUBLISHERS.intersection(edge.names)
         and edge.importer != "pixipix.cli"
-        and (edge.importer, edge.imported, edge.names) != facade_reexport
+        and (edge.importer, edge.imported, edge.names) not in facade_reexports
     ]
     assert not violations, "\n".join(
         _failure("stage publisher orchestration", edge) for edge in violations
@@ -446,17 +623,95 @@ def test_stage_implementations_do_not_import_stages_io_facade() -> None:
     )
 
 
-def test_scale_package_is_one_monolithic_implementation_module() -> None:
-    package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale"
-    source_files = sorted(
-        path.relative_to(package).as_posix()
-        for path in package.rglob("*.py")
-        if "__pycache__" not in path.parts
+def test_scale_internal_module_set_and_dependency_direction_are_exact() -> None:
+    modules = {_module(path) for path in _production_files()}
+    actual_modules = {
+        module
+        for module in modules
+        if module == "pixipix.stages.scale" or module.startswith("pixipix.stages.scale.")
+    }
+    assert actual_modules == SCALE_MODULES, (
+        "scale internal module set differs: "
+        f"missing={sorted(SCALE_MODULES - actual_modules)}, "
+        f"unexpected={sorted(actual_modules - SCALE_MODULES)}"
+    )
+    assert not (PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale.py").exists()
+
+    violations, internal_symbols, root_imports = _scale_dependency_violations(
+        _edges(),
+        modules,
     )
 
-    assert source_files == ["__init__.py"]
-    assert not (package.parent / "scale.py").exists()
-    assert _module(package / "__init__.py") == "pixipix.stages.scale"
+    assert not violations, "\n".join(violations)
+    assert root_imports == SCALE_ALLOWED_ROOT_IMPORTS
+    assert internal_symbols == SCALE_ALLOWED_INTERNAL_SYMBOLS, (
+        "scale internal dependency graph differs: "
+        f"missing={sorted(set(SCALE_ALLOWED_INTERNAL_SYMBOLS) - set(internal_symbols))}, "
+        f"unexpected={sorted(set(internal_symbols) - set(SCALE_ALLOWED_INTERNAL_SYMBOLS))}, "
+        f"symbols={internal_symbols}"
+    )
+
+
+def test_scale_api_orchestration_order_is_exact() -> None:
+    path = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale" / "api.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "publish_scale"
+    )
+    calls = [
+        call.func.id
+        for statement in function.body
+        for call in ast.walk(statement)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    ]
+    assert calls == [
+        "validate_stage_output_target",
+        "validate_stage_input",
+        "project_scale_stage",
+        "enforce_resource_policy",
+        "decode_stage_input",
+        "scale_stage",
+        "publish_stage_output",
+    ]
+
+
+def test_scale_dependency_rule_rejects_module_and_root_import_bypasses() -> None:
+    modules = {"pixipix", *SCALE_MODULES}
+    cases = (
+        (
+            "pixipix.stages.scale.execution",
+            "pixipix.stages.scale",
+            "import pixipix.stages.scale.planning as planning",
+        ),
+        (
+            "pixipix.stages.scale.execution",
+            "pixipix.stages.scale",
+            "from .planning import project_scale_stage as planner",
+        ),
+        (
+            "pixipix.stages.scale.execution",
+            "pixipix.stages.scale",
+            "import pixipix.stages.scale.geometry as geometry",
+        ),
+        (
+            "pixipix.stages.scale.metadata",
+            "pixipix.stages.scale",
+            "from pixipix import cli",
+        ),
+        (
+            "pixipix.stages.scale.metadata",
+            "pixipix.stages.scale",
+            "import pixipix",
+        ),
+    )
+    for importer, package, source in cases:
+        violations, _symbols, _root_imports = _scale_dependency_violations(
+            _collect_source(importer, package, source),
+            modules,
+        )
+        assert violations, f"scale dependency bypass was accepted: {source}"
 
 
 def test_only_locked_stage_to_stage_rounding_edge_exists() -> None:
