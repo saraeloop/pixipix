@@ -263,6 +263,129 @@ SCALE_ALLOWED_PIPELINE_SYMBOLS = {
         "ValidatedStageInput",
     },
 }
+PIXELIZE_MODULES = {
+    "pixipix.stages.pixelize",
+    "pixipix.stages.pixelize.api",
+    "pixipix.stages.pixelize.execution",
+    "pixipix.stages.pixelize.metadata",
+    "pixipix.stages.pixelize.planning",
+}
+PIXELIZE_ALLOWED_INTERNAL_SYMBOLS = {
+    ("pixipix.stages.pixelize", "pixipix.stages.pixelize.api"): {
+        "publish_pixelize",
+    },
+    ("pixipix.stages.pixelize", "pixipix.stages.pixelize.execution"): {
+        "PixelizeRun",
+        "PreparedCellGrid",
+        "apply_alpha_policy",
+        "pixelize_prepared_grid",
+        "pixelize_stage",
+        "prepare_cell_grid",
+        "representative_pixel",
+        "round_channel_half_away_from_zero",
+    },
+    ("pixipix.stages.pixelize", "pixipix.stages.pixelize.planning"): {
+        "MAX_PREPARED_PIXELS",
+        "CellGridProjection",
+        "PixelizeStagePlan",
+        "project_cell_grid",
+        "project_pixelize_resources",
+        "project_pixelize_stage",
+    },
+    ("pixipix.stages.pixelize.api", "pixipix.stages.pixelize.execution"): {
+        "pixelize_stage",
+    },
+    ("pixipix.stages.pixelize.api", "pixipix.stages.pixelize.planning"): {
+        "project_pixelize_stage",
+    },
+    ("pixipix.stages.pixelize.execution", "pixipix.stages.pixelize.metadata"): {
+        "build_pixelize_metadata",
+    },
+    ("pixipix.stages.pixelize.execution", "pixipix.stages.pixelize.planning"): {
+        "CellGridProjection",
+        "PixelizeStagePlan",
+        "_require_pixelize_config",
+        "project_cell_grid",
+    },
+    ("pixipix.stages.pixelize.metadata", "pixipix.stages.pixelize.planning"): {
+        "PixelizeStagePlan",
+    },
+}
+PIXELIZE_ALLOWED_PIXIPIX_DEPENDENCIES = {
+    "pixipix.stages.pixelize": {
+        "pixipix.stages.pixelize.api",
+        "pixipix.stages.pixelize.execution",
+        "pixipix.stages.pixelize.planning",
+    },
+    "pixipix.stages.pixelize.api": {
+        "pixipix.config",
+        "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.pipeline.publication",
+        "pixipix.resources",
+        "pixipix.stages.pixelize.execution",
+        "pixipix.stages.pixelize.planning",
+    },
+    "pixipix.stages.pixelize.execution": {
+        "pixipix.config",
+        "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.pipeline.publication",
+        "pixipix.stages.pixelize.metadata",
+        "pixipix.stages.pixelize.planning",
+        "pixipix.stages.scale",
+    },
+    "pixipix.stages.pixelize.metadata": {
+        "pixipix",
+        "pixipix.config",
+        "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.stages.pixelize.planning",
+    },
+    "pixipix.stages.pixelize.planning": {
+        "pixipix.config",
+        "pixipix.errors",
+        "pixipix.models",
+        "pixipix.pipeline.input",
+        "pixipix.resources",
+    },
+}
+PIXELIZE_ALLOWED_EXTERNAL_IMPORTS = {
+    "pixipix.stages.pixelize": {"__future__"},
+    "pixipix.stages.pixelize.api": {"__future__", "pathlib"},
+    "pixipix.stages.pixelize.execution": {"__future__", "dataclasses", "numpy"},
+    "pixipix.stages.pixelize.metadata": {"__future__"},
+    "pixipix.stages.pixelize.planning": {"__future__", "dataclasses"},
+}
+PIXELIZE_ALLOWED_ROOT_IMPORTS = {
+    (
+        "pixipix.stages.pixelize.metadata",
+        "pixipix",
+        ("__version__",),
+    ),
+}
+PIXELIZE_ALLOWED_PIPELINE_SYMBOLS = {
+    ("pixipix.stages.pixelize.api", "pixipix.pipeline.input"): {
+        "decode_stage_input",
+        "validate_stage_input",
+    },
+    ("pixipix.stages.pixelize.api", "pixipix.pipeline.publication"): {
+        "publish_stage_output",
+        "validate_stage_output_target",
+    },
+    ("pixipix.stages.pixelize.execution", "pixipix.pipeline.input"): {
+        "LoadedStageInput",
+    },
+    ("pixipix.stages.pixelize.execution", "pixipix.pipeline.publication"): {
+        "OutputFrameImage",
+    },
+    ("pixipix.stages.pixelize.metadata", "pixipix.pipeline.input"): {
+        "LoadedStageInput",
+    },
+    ("pixipix.stages.pixelize.planning", "pixipix.pipeline.input"): {
+        "ValidatedStageInput",
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +454,43 @@ class _ImportCollector(ast.NodeVisitor):
                 self._scope_depth == 0 and self._type_checking_depth == 0,
             )
         )
+
+
+class _DynamicImportCollector(ast.NodeVisitor):
+    def __init__(self, importer: str) -> None:
+        self.importer = importer
+        self.import_names = {"__import__"}
+        self.violations: list[str] = []
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module == "importlib":
+            self.import_names.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "import_module"
+            )
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if isinstance(node.value, ast.Name) and node.value.id in self.import_names:
+            self.import_names.update(
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            )
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        dynamic = (isinstance(node.func, ast.Name) and node.func.id in self.import_names) or (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "import_module"
+        )
+        if dynamic:
+            self.violations.append(
+                f"dynamic import: {self.importer} calls a dynamic importer at production "
+                f"line {node.lineno}"
+            )
+        self.generic_visit(node)
+
+
+def _dynamic_import_violations(importer: str, tree: ast.AST) -> list[str]:
+    collector = _DynamicImportCollector(importer)
+    collector.visit(tree)
+    return collector.violations
 
 
 def _production_files() -> list[Path]:
@@ -516,6 +676,50 @@ def _scale_dependency_violations(
     return violations, internal_symbols, root_imports
 
 
+def _pixelize_dependency_violations(
+    edges: list[ImportEdge],
+    modules: set[str],
+) -> tuple[list[str], dict[tuple[str, str], set[str]], set[tuple[str, str, tuple[str, ...]]]]:
+    violations: list[str] = []
+    internal_symbols: dict[tuple[str, str], set[str]] = {}
+    root_imports: set[tuple[str, str, tuple[str, ...]]] = set()
+    for edge in edges:
+        if edge.importer not in PIXELIZE_MODULES:
+            continue
+        if (
+            not edge.imported.startswith("pixipix")
+            and edge.imported not in PIXELIZE_ALLOWED_EXTERNAL_IMPORTS[edge.importer]
+        ):
+            violations.append(_failure("pixelize external capability", edge))
+        if edge.imported == "pixipix":
+            root_import = (edge.importer, edge.imported, edge.names)
+            root_imports.add(root_import)
+            if root_import not in PIXELIZE_ALLOWED_ROOT_IMPORTS:
+                violations.append(_failure("pixelize package-root capability", edge))
+        if edge.imported.startswith("pixipix.pipeline.") and (
+            set(edge.names)
+            - PIXELIZE_ALLOWED_PIPELINE_SYMBOLS.get((edge.importer, edge.imported), set())
+        ):
+            violations.append(_failure("pixelize shared pipeline capability", edge))
+        for target in _target_modules(edge, modules):
+            if target in PIXELIZE_MODULES:
+                key = (edge.importer, target)
+                internal_symbols.setdefault(key, set()).update(edge.names)
+                allowed_symbols = PIXELIZE_ALLOWED_INTERNAL_SYMBOLS.get(key)
+                if allowed_symbols is None or not edge.names or set(edge.names) - allowed_symbols:
+                    violations.append(_failure("pixelize internal dependency direction", edge))
+            if target == "pixipix.stages.scale" and edge.names != (
+                "round_channel_half_away_from_zero",
+            ):
+                violations.append(_failure("pixelize scale capability", edge))
+            if (
+                target.startswith("pixipix")
+                and target not in PIXELIZE_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
+            ):
+                violations.append(_failure("pixelize layer capability", edge))
+    return violations, internal_symbols, root_imports
+
+
 def test_only_cli_imports_stage_command_publishers() -> None:
     modules = {_module(path) for path in _production_files()}
     facade_reexports = {
@@ -528,6 +732,11 @@ def test_only_cli_imports_stage_command_publishers() -> None:
             "pixipix.stages.scale",
             "pixipix.stages.scale.api",
             ("publish_scale",),
+        ),
+        (
+            "pixipix.stages.pixelize",
+            "pixipix.stages.pixelize.api",
+            ("publish_pixelize",),
         ),
     }
     violations = [
@@ -677,17 +886,69 @@ def test_scale_api_orchestration_order_is_exact() -> None:
     ]
 
 
-def test_pixelize_package_is_one_monolithic_implementation_module() -> None:
-    package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize"
-    source_files = sorted(
-        path.relative_to(package).as_posix()
-        for path in package.rglob("*.py")
-        if "__pycache__" not in path.parts
+def test_pixelize_internal_module_set_and_dependency_direction_are_exact() -> None:
+    modules = {_module(path) for path in _production_files()}
+    actual_modules = {
+        module
+        for module in modules
+        if module == "pixipix.stages.pixelize" or module.startswith("pixipix.stages.pixelize.")
+    }
+    assert actual_modules == PIXELIZE_MODULES, (
+        "pixelize internal module set differs: "
+        f"missing={sorted(PIXELIZE_MODULES - actual_modules)}, "
+        f"unexpected={sorted(actual_modules - PIXELIZE_MODULES)}"
+    )
+    assert not (PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize.py").exists()
+
+    violations, internal_symbols, root_imports = _pixelize_dependency_violations(
+        _edges(),
+        modules,
+    )
+    dynamic_imports: list[str] = []
+    for path in _production_files():
+        importer = _module(path)
+        if importer in PIXELIZE_MODULES:
+            dynamic_imports.extend(
+                _dynamic_import_violations(
+                    importer,
+                    ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
+                )
+            )
+
+    assert not violations, "\n".join(violations)
+    assert not dynamic_imports, "\n".join(dynamic_imports)
+    assert root_imports == PIXELIZE_ALLOWED_ROOT_IMPORTS
+    assert internal_symbols == PIXELIZE_ALLOWED_INTERNAL_SYMBOLS, (
+        "pixelize internal dependency graph differs: "
+        f"missing={sorted(set(PIXELIZE_ALLOWED_INTERNAL_SYMBOLS) - set(internal_symbols))}, "
+        f"unexpected={sorted(set(internal_symbols) - set(PIXELIZE_ALLOWED_INTERNAL_SYMBOLS))}, "
+        f"symbols={internal_symbols}"
     )
 
-    assert source_files == ["__init__.py"]
-    assert not (package.parent / "pixelize.py").exists()
-    assert _module(package / "__init__.py") == "pixipix.stages.pixelize"
+
+def test_pixelize_api_orchestration_order_is_exact() -> None:
+    path = PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize" / "api.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "publish_pixelize"
+    )
+    calls = [
+        call.func.id
+        for statement in function.body
+        for call in ast.walk(statement)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    ]
+    assert calls == [
+        "validate_stage_output_target",
+        "validate_stage_input",
+        "project_pixelize_stage",
+        "enforce_resource_policy",
+        "decode_stage_input",
+        "pixelize_stage",
+        "publish_stage_output",
+    ]
 
 
 def test_scale_dependency_rule_rejects_module_and_root_import_bypasses() -> None:
@@ -727,6 +988,68 @@ def test_scale_dependency_rule_rejects_module_and_root_import_bypasses() -> None
         assert violations, f"scale dependency bypass was accepted: {source}"
 
 
+def test_pixelize_dependency_rule_rejects_module_root_and_scale_bypasses() -> None:
+    modules = {"pixipix", *PIXELIZE_MODULES, *SCALE_MODULES}
+    cases = (
+        (
+            "pixipix.stages.pixelize.execution",
+            "pixipix.stages.pixelize",
+            "import pixipix.stages.pixelize.planning as planning",
+        ),
+        (
+            "pixipix.stages.pixelize.execution",
+            "pixipix.stages.pixelize",
+            "from .planning import project_pixelize_stage as planner",
+        ),
+        (
+            "pixipix.stages.pixelize.metadata",
+            "pixipix.stages.pixelize",
+            "from pixipix import cli",
+        ),
+        (
+            "pixipix.stages.pixelize.metadata",
+            "pixipix.stages.pixelize",
+            "import pixipix",
+        ),
+        (
+            "pixipix.stages.pixelize.execution",
+            "pixipix.stages.pixelize",
+            "import pixipix.stages.scale as scale",
+        ),
+        (
+            "pixipix.stages.pixelize.execution",
+            "pixipix.stages.pixelize",
+            "from pixipix.stages.scale.geometry import round_channel_half_away_from_zero",
+        ),
+        (
+            "pixipix.stages.pixelize.execution",
+            "pixipix.stages.pixelize",
+            "from pixipix.stages.scale import publish_scale",
+        ),
+    )
+    for importer, package, source in cases:
+        violations, _symbols, _root_imports = _pixelize_dependency_violations(
+            _collect_source(importer, package, source),
+            modules,
+        )
+        assert violations, f"pixelize dependency bypass was accepted: {source}"
+
+
+def test_pixelize_dependency_rule_rejects_dynamic_imports() -> None:
+    cases = (
+        "__import__('pixipix.stages.scale')",
+        "load = __import__\nload('pixipix.stages.scale')",
+        "import importlib\nimportlib.import_module('pixipix.stages.scale')",
+        "from importlib import import_module as load\nload('pixipix.stages.scale')",
+    )
+    for source in cases:
+        violations = _dynamic_import_violations(
+            "pixipix.stages.pixelize.execution",
+            ast.parse(source),
+        )
+        assert violations, f"pixelize dynamic import bypass was accepted: {source}"
+
+
 def test_only_locked_stage_to_stage_rounding_edge_exists() -> None:
     modules = {_module(path) for path in _production_files()}
     stage_edges = _cross_stage_edges(_edges(), modules)
@@ -734,13 +1057,13 @@ def test_only_locked_stage_to_stage_rounding_edge_exists() -> None:
         _failure("stage-to-stage dependency", edge) for edge, _target in stage_edges
     ) or (
         "stage-to-stage dependency: expected exactly "
-        "pixipix.stages.pixelize -> "
+        "pixipix.stages.pixelize.execution -> "
         "pixipix.stages.scale.round_channel_half_away_from_zero"
     )
     assert len(stage_edges) == 1, details
     edge, target = stage_edges[0]
     assert (edge.importer, target, edge.names, edge.hard) == (
-        "pixipix.stages.pixelize",
+        "pixipix.stages.pixelize.execution",
         "pixipix.stages.scale",
         ("round_channel_half_away_from_zero",),
         True,
@@ -882,7 +1205,7 @@ def test_import_target_resolution_covers_supported_syntax(
     expected: str,
 ) -> None:
     modules = {"pixipix.stages", *STAGE_IMPLEMENTATIONS}
-    edge = _collect_source("pixipix.stages.pixelize", "pixipix.stages", source)[0]
+    edge = _collect_source("pixipix.stages.pixelize.execution", "pixipix.stages", source)[0]
     assert expected in _target_modules(edge, modules)
 
 
@@ -907,7 +1230,7 @@ def test_package_init_relative_import_resolves_below_package() -> None:
 )
 def test_rounding_exception_rejects_broader_cross_stage_imports(source: str) -> None:
     modules = {"pixipix.stages", *STAGE_IMPLEMENTATIONS}
-    edges = _collect_source("pixipix.stages.pixelize", "pixipix.stages", source)
+    edges = _collect_source("pixipix.stages.pixelize.execution", "pixipix.stages", source)
     cross_stage = _cross_stage_edges(edges, modules)
     assert len(cross_stage) == 1
     edge, target = cross_stage[0]

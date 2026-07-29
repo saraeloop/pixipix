@@ -31,6 +31,7 @@ CompatibilityModule = Literal[
     "pixipix.stages.scale",
     "pixipix.stages.scale.api",
     "pixipix.stages.pixelize",
+    "pixipix.stages.pixelize.api",
     "pixipix.stages.align",
     "pixipix.stages.align.api",
     "pixipix.stages.io",
@@ -261,6 +262,34 @@ MATRIX = (
     ),
     _symbol(
         "pixipix.stages.pixelize",
+        "PreparedCellGrid",
+        ("compatibility",),
+        "internal",
+        "class",
+        "(pixels: 'UInt8Image', top_padding: 'int', right_padding: 'int', "
+        "top_crop: 'int', right_crop: 'int', warning: 'ProcessingWarning | None') -> None",
+    ),
+    _symbol(
+        "pixipix.stages.pixelize",
+        "CellGridProjection",
+        ("compatibility",),
+        "internal",
+        "class",
+        "(input_dimensions: 'Dimensions', prepared_dimensions: 'Dimensions', "
+        "logical_output_dimensions: 'Dimensions', top_padding: 'int', "
+        "right_padding: 'int', top_crop: 'int', right_crop: 'int', "
+        "warning: 'ProcessingWarning | None') -> None",
+    ),
+    _symbol(
+        "pixipix.stages.pixelize",
+        "PixelizeRun",
+        ("compatibility",),
+        "internal",
+        "class",
+        "(metadata: 'PixelizeStageMetadata', frame_images: 'tuple[OutputFrameImage, ...]') -> None",
+    ),
+    _symbol(
+        "pixipix.stages.pixelize",
         "PixelizeStagePlan",
         ("architecture",),
         "internal",
@@ -269,6 +298,23 @@ MATRIX = (
         "cell_grids: 'tuple[CellGridProjection, ...]', "
         "warnings: 'tuple[ProcessingWarning, ...]', "
         "projection: 'ResourceProjection') -> None",
+    ),
+    _symbol(
+        "pixipix.stages.pixelize",
+        "MAX_PREPARED_PIXELS",
+        ("compatibility",),
+        "internal",
+        "value",
+    ),
+    _symbol(
+        "pixipix.stages.pixelize",
+        "pixelize_stage",
+        ("compatibility",),
+        "internal",
+        signature=(
+            "(stage: 'LoadedStageInput', loaded: 'LoadedConfig', plan: 'PixelizeStagePlan') "
+            "-> 'PixelizeRun'"
+        ),
     ),
     _symbol(
         "pixipix.stages.pixelize",
@@ -334,6 +380,13 @@ MATRIX = (
     ),
     _symbol(
         "pixipix.stages.pixelize",
+        "round_channel_half_away_from_zero",
+        ("production", "tests"),
+        "private-but-consumed",
+        signature="(value: 'float') -> 'int'",
+    ),
+    _symbol(
+        "pixipix.stages.pixelize.api",
         "decode_stage_input",
         ("monkeypatch",),
         "monkeypatch-sensitive",
@@ -671,7 +724,7 @@ def test_monkeypatch_sensitive_bindings_resolve_at_current_paths() -> None:
         "pixipix.stages.extract:write_png",
         "pixipix.stages.extract:_materialize_frame_crop",
         "pixipix.stages.scale.api:decode_stage_input",
-        "pixipix.stages.pixelize:decode_stage_input",
+        "pixipix.stages.pixelize.api:decode_stage_input",
         "pixipix.stages.align.api:decode_stage_input",
     )
     for target in targets:
@@ -889,9 +942,13 @@ def test_stage_plan_exports_are_the_exact_types_constructed_by_planners(
     assert type(align_plan) is AlignmentStagePlan
 
 
-def test_pixelize_package_preserves_module_and_rounding_edge_identity() -> None:
+def test_pixelize_facade_reexports_exact_internal_objects() -> None:
     package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize"
     pixelize = importlib.import_module("pixipix.stages.pixelize")
+    api = importlib.import_module("pixipix.stages.pixelize.api")
+    execution = importlib.import_module("pixipix.stages.pixelize.execution")
+    metadata = importlib.import_module("pixipix.stages.pixelize.metadata")
+    planning = importlib.import_module("pixipix.stages.pixelize.planning")
     scale = importlib.import_module("pixipix.stages.scale")
     geometry = importlib.import_module("pixipix.stages.scale.geometry")
     pixelize_file = pixelize.__file__
@@ -900,29 +957,47 @@ def test_pixelize_package_preserves_module_and_rounding_edge_identity() -> None:
     assert Path(pixelize_file).resolve() == (package / "__init__.py").resolve()
     assert pixelize.__spec__ is not None
     assert pixelize.__spec__.submodule_search_locations is not None
-    for name in (
-        "PreparedCellGrid",
-        "CellGridProjection",
-        "PixelizeRun",
-        "PixelizeStagePlan",
-        "project_cell_grid",
-        "prepare_cell_grid",
+    owners = {
+        "publish_pixelize": api,
+        "PreparedCellGrid": execution,
+        "CellGridProjection": planning,
+        "PixelizeRun": execution,
+        "PixelizeStagePlan": planning,
+        "project_cell_grid": planning,
+        "prepare_cell_grid": execution,
+        "representative_pixel": execution,
+        "apply_alpha_policy": execution,
+        "pixelize_prepared_grid": execution,
+        "project_pixelize_resources": planning,
+        "project_pixelize_stage": planning,
+        "pixelize_stage": execution,
+        "MAX_PREPARED_PIXELS": planning,
+        "round_channel_half_away_from_zero": execution,
+    }
+    for name, owner in owners.items():
+        assert getattr(pixelize, name) is getattr(owner, name)
+    for infrastructure_name in (
+        "decode_stage_input",
+        "np",
+        "_require_pixelize_config",
+        "_validate_config_handoff",
         "_majority",
         "_center",
         "_alpha_weighted_majority",
-        "representative_pixel",
-        "apply_alpha_policy",
-        "pixelize_prepared_grid",
-        "_require_pixelize_config",
-        "_validate_config_handoff",
-        "project_pixelize_resources",
-        "project_pixelize_stage",
-        "pixelize_stage",
-        "publish_pixelize",
+        "build_pixelize_metadata",
+        "Image",
     ):
-        assert vars(pixelize)[name].__module__ == "pixipix.stages.pixelize"
+        assert not hasattr(pixelize, infrastructure_name)
+    assert str(inspect.signature(metadata.build_pixelize_metadata)) == (
+        "(stage: 'LoadedStageInput', loaded: 'LoadedConfig', plan: 'PixelizeStagePlan', "
+        "config: 'PixelizeConfig', cell_size: 'int') -> 'PixelizeStageMetadata'"
+    )
+    assert str(inspect.signature(planning._validate_config_handoff)) == (
+        "(stage: 'ValidatedStageInput', loaded: 'LoadedConfig', cell_size: 'int') -> 'None'"
+    )
     assert (
-        vars(pixelize)["round_channel_half_away_from_zero"]
+        pixelize.round_channel_half_away_from_zero
+        is execution.round_channel_half_away_from_zero
         is vars(scale)["round_channel_half_away_from_zero"]
         is vars(geometry)["round_channel_half_away_from_zero"]
     )
@@ -932,16 +1007,32 @@ def test_pixelize_package_preserves_module_and_rounding_edge_identity() -> None:
     code = (
         "import pathlib, sys; "
         "import pixipix.stages.pixelize as pixelize; "
+        "import pixipix.stages.pixelize.api as api; "
+        "import pixipix.stages.pixelize.execution as execution; "
+        "import pixipix.stages.pixelize.metadata as metadata; "
+        "import pixipix.stages.pixelize.planning as planning; "
         "import pixipix.stages.scale as scale; "
         "import pixipix.stages.scale.geometry as geometry; "
         "assert pathlib.Path(pixelize.__file__).name == '__init__.py'; "
         "assert pixelize.__spec__.submodule_search_locations is not None; "
-        "assert pixelize.PixelizeStagePlan.__module__ == 'pixipix.stages.pixelize'; "
-        "assert pixelize.PixelizeRun.__module__ == 'pixipix.stages.pixelize'; "
-        "assert pixelize.publish_pixelize.__module__ == 'pixipix.stages.pixelize'; "
+        "assert pixelize.PixelizeStagePlan is planning.PixelizeStagePlan; "
+        "assert pixelize.PixelizeRun is execution.PixelizeRun; "
+        "assert pixelize.publish_pixelize is api.publish_pixelize; "
+        "assert pixelize.PixelizeStagePlan.__module__ "
+        "== 'pixipix.stages.pixelize.planning'; "
+        "assert pixelize.PixelizeRun.__module__ "
+        "== 'pixipix.stages.pixelize.execution'; "
+        "assert pixelize.publish_pixelize.__module__ == 'pixipix.stages.pixelize.api'; "
         "assert pixelize.round_channel_half_away_from_zero "
+        "is execution.round_channel_half_away_from_zero "
         "is scale.round_channel_half_away_from_zero "
         "is geometry.round_channel_half_away_from_zero; "
+        "assert callable(metadata.build_pixelize_metadata); "
+        "assert not hasattr(pixelize, 'decode_stage_input'); "
+        "assert not hasattr(pixelize, 'np'); "
+        "assert not hasattr(pixelize, '_require_pixelize_config'); "
+        "assert not hasattr(pixelize, '_validate_config_handoff'); "
+        "assert not hasattr(pixelize, 'build_pixelize_metadata'); "
         "assert sys.modules['pixipix.stages.pixelize'] is pixelize; "
         "assert 'pixipix.stages.pixelize.__init__' not in sys.modules"
     )
@@ -953,6 +1044,46 @@ def test_pixelize_package_preserves_module_and_rounding_edge_identity() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_pixelize_facade_is_relative_grouped_and_definition_free() -> None:
+    facade_path = PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize" / "__init__.py"
+    tree = ast.parse(facade_path.read_text(encoding="utf-8"), filename=str(facade_path))
+    relative_imports = [
+        node for node in tree.body if isinstance(node, ast.ImportFrom) and node.level
+    ]
+    expected = {
+        "api": ("publish_pixelize",),
+        "execution": (
+            "PixelizeRun",
+            "PreparedCellGrid",
+            "apply_alpha_policy",
+            "pixelize_prepared_grid",
+            "pixelize_stage",
+            "prepare_cell_grid",
+            "representative_pixel",
+            "round_channel_half_away_from_zero",
+        ),
+        "planning": (
+            "MAX_PREPARED_PIXELS",
+            "CellGridProjection",
+            "PixelizeStagePlan",
+            "project_cell_grid",
+            "project_pixelize_resources",
+            "project_pixelize_stage",
+        ),
+    }
+
+    assert {
+        node.module: tuple(alias.name for alias in node.names) for node in relative_imports
+    } == expected
+    assert all(node.level == 1 for node in relative_imports)
+    assert all(alias.asname == alias.name for node in relative_imports for alias in node.names)
+    assert all(isinstance(node, (ast.Expr, ast.ImportFrom)) for node in tree.body)
+    expressions = [node for node in tree.body if isinstance(node, ast.Expr)]
+    assert len(expressions) == 1
+    assert isinstance(expressions[0].value, ast.Constant)
+    assert isinstance(expressions[0].value.value, str)
 
 
 def test_scale_facade_reexports_exact_internal_objects() -> None:

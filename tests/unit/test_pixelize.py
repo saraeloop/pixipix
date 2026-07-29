@@ -1,19 +1,26 @@
 from __future__ import annotations
 
-import sys
-from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from pixipix.config import load_config
-from pixipix.errors import ProcessingError, ResourcePolicyError
-from pixipix.models import Dimensions
+import pixipix.stages.pixelize.execution as pixelize_execution
+import pixipix.stages.pixelize.metadata as pixelize_metadata
+import pixipix.stages.pixelize.planning as pixelize_planning
+from pixipix.config import LoadedConfig, PixelizeConfig, load_config
+from pixipix.errors import ConfigurationError, ProcessingError, ResourcePolicyError
+from pixipix.models import Dimensions, PixelizeStageMetadata, UInt8Image
+from pixipix.pipeline.input import InputStageFrame, LoadedStageInput
+from pixipix.pipeline.publication import OutputFrameImage
 from pixipix.stages.io import validate_stage_input
 from pixipix.stages.pixelize import (
+    PixelizeRun,
+    PixelizeStagePlan,
     apply_alpha_policy,
     pixelize_prepared_grid,
+    pixelize_stage,
     prepare_cell_grid,
     project_cell_grid,
     project_pixelize_stage,
@@ -23,19 +30,68 @@ from tests.helpers import pipeline_config, write_config, write_declared_scale_st
 
 
 class _PixelizeNumpyProxy:
-    def __init__(self, pad: Callable[..., object]) -> None:
-        self.pad = pad
+    def __init__(self, **overrides: object) -> None:
+        self._overrides = overrides
 
     def __getattr__(self, name: str) -> object:
+        if name in self._overrides:
+            return self._overrides[name]
         return getattr(np, name)
 
 
-def _patch_pixelize_pad(
+def _patch_pixelize_numpy(
     monkeypatch: pytest.MonkeyPatch,
-    pad: Callable[..., object],
+    **overrides: object,
 ) -> None:
-    pixelize = sys.modules["pixipix.stages.pixelize"]
-    monkeypatch.setitem(vars(pixelize), "np", _PixelizeNumpyProxy(pad))
+    monkeypatch.setattr(pixelize_execution, "np", _PixelizeNumpyProxy(**overrides))
+
+
+def _loaded_pixelize_case(
+    tmp_path: Path,
+) -> tuple[LoadedStageInput, LoadedConfig, PixelizeStagePlan]:
+    config_path = tmp_path / "project.toml"
+    write_config(
+        config_path,
+        pipeline_config(
+            names=("a", "b"),
+            scale='mode = "explicit-factor"\nfactor = 1.0',
+        ),
+    )
+    loaded = load_config(config_path)
+    scaled = tmp_path / "scaled"
+    write_declared_scale_stage(
+        scaled,
+        loaded,
+        ((2, 2), (2, 2)),
+        ((2, 2), (2, 2)),
+        factor=1.0,
+    )
+    validated = validate_stage_input(scaled, "scale")
+    plan = project_pixelize_stage(validated, loaded)
+    frames = tuple(
+        InputStageFrame(
+            frame.name,
+            frame.relative_path,
+            frame.source_order,
+            frame.dimensions,
+            np.full(
+                (frame.dimensions.height, frame.dimensions.width, 4),
+                255,
+                dtype=np.uint8,
+            ),
+        )
+        for frame in validated.frames
+    )
+    return (
+        LoadedStageInput(
+            validated.identity,
+            frames,
+            validated.metadata,
+            validated.warnings,
+        ),
+        loaded,
+        plan,
+    )
 
 
 def test_scenario_i_padding_exactly() -> None:
@@ -63,7 +119,7 @@ def test_pad_transparent_uses_pixelize_module_numpy_binding(
         raise PixelizePadReached("pixelize module np.pad reached")
 
     global_pad = np.pad
-    _patch_pixelize_pad(monkeypatch, mark_pad)
+    _patch_pixelize_numpy(monkeypatch, pad=mark_pad)
 
     with pytest.raises(PixelizePadReached, match=r"pixelize module np\.pad reached") as raised:
         prepare_cell_grid(pixels, 2, "pad-transparent", "frame")
@@ -116,7 +172,8 @@ def test_padding_rejects_unsafe_prepared_dimensions_before_allocation(
     def fail_pad(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("unsafe padding reached allocation")
 
-    monkeypatch.setattr(np, "pad", fail_pad)
+    global_pad = np.pad
+    _patch_pixelize_numpy(monkeypatch, pad=fail_pad)
     with pytest.raises(ProcessingError, match="PX_PIXELIZE_002"):
         prepare_cell_grid(
             np.zeros((1, 1, 4), dtype=np.uint8),
@@ -124,6 +181,138 @@ def test_padding_rejects_unsafe_prepared_dimensions_before_allocation(
             "pad-transparent",
             "f",
         )
+    assert np.pad is global_pad
+
+
+def test_pixelize_grid_uses_execution_module_numpy_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pixels = np.ones((2, 2, 4), dtype=np.uint8)
+
+    class PixelizeZerosReached(Exception):
+        pass
+
+    def mark_zeros(*_args: object, **_kwargs: object) -> None:
+        raise PixelizeZerosReached("pixelize execution np.zeros reached")
+
+    global_zeros = np.zeros
+    _patch_pixelize_numpy(monkeypatch, zeros=mark_zeros)
+
+    with pytest.raises(
+        PixelizeZerosReached,
+        match=r"pixelize execution np\.zeros reached",
+    ) as raised:
+        pixelize_prepared_grid(pixels, 2, "center", "preserve", 128)
+
+    traceback_names = tuple(entry.name for entry in raised.traceback)
+    assert "pixelize_prepared_grid" in traceback_names
+    assert traceback_names[-1] == "mark_zeros"
+    assert np.zeros is global_zeros
+
+
+def test_pixelize_stage_consumes_planned_grid_without_recomputation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage, loaded, plan = _loaded_pixelize_case(tmp_path)
+
+    def fail_recomputation(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("execution recomputed admitted pixelize planning facts")
+
+    monkeypatch.setattr(pixelize_execution, "project_cell_grid", fail_recomputation)
+    monkeypatch.setattr(pixelize_planning, "project_pixelize_stage", fail_recomputation)
+    monkeypatch.setattr(pixelize_planning, "project_pixelize_resources", fail_recomputation)
+
+    run = pixelize_stage(stage, loaded, plan)
+
+    assert run.frame_images[0].pixels.shape == (1, 1, 4)
+    assert run.metadata.frames == plan.frames
+
+
+def test_pixelize_stage_preserves_config_transform_metadata_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage, loaded, plan = _loaded_pixelize_case(tmp_path)
+    events: list[str] = []
+    real_require = pixelize_planning._require_pixelize_config
+    real_transform = pixelize_execution.pixelize_prepared_grid
+    real_metadata = pixelize_metadata.build_pixelize_metadata
+    real_run = pixelize_execution.PixelizeRun
+
+    def record_require(value: LoadedConfig) -> tuple[PixelizeConfig, int]:
+        events.append("config")
+        return real_require(value)
+
+    def record_transform(
+        pixels: UInt8Image,
+        cell_size: int,
+        strategy: str,
+        alpha_policy: str,
+        alpha_threshold: int,
+    ) -> UInt8Image:
+        events.append("transform")
+        return real_transform(pixels, cell_size, strategy, alpha_policy, alpha_threshold)
+
+    def record_metadata(
+        stage_value: LoadedStageInput,
+        loaded_value: LoadedConfig,
+        plan_value: PixelizeStagePlan,
+        config: PixelizeConfig,
+        cell_size: int,
+    ) -> PixelizeStageMetadata:
+        events.append("metadata")
+        return real_metadata(stage_value, loaded_value, plan_value, config, cell_size)
+
+    def record_run(
+        metadata: PixelizeStageMetadata,
+        frame_images: tuple[OutputFrameImage, ...],
+    ) -> PixelizeRun:
+        events.append("run")
+        return real_run(metadata, frame_images)
+
+    monkeypatch.setattr(pixelize_execution, "_require_pixelize_config", record_require)
+    monkeypatch.setattr(pixelize_execution, "pixelize_prepared_grid", record_transform)
+    monkeypatch.setattr(pixelize_execution, "build_pixelize_metadata", record_metadata)
+    monkeypatch.setattr(pixelize_execution, "PixelizeRun", record_run)
+
+    run = pixelize_stage(stage, loaded, plan)
+
+    assert events == ["config", "transform", "transform", "metadata", "run"]
+    config, cell_size = real_require(loaded)
+    assert run.metadata == pixelize_metadata.build_pixelize_metadata(
+        stage,
+        loaded,
+        plan,
+        config,
+        cell_size,
+    )
+    assert type(run) is real_run
+
+
+def test_missing_pixelize_config_fails_before_execution_and_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stage, loaded, plan = _loaded_pixelize_case(tmp_path)
+    missing_pixelize = replace(
+        loaded,
+        config=replace(loaded.config, pixelize=PixelizeConfig()),
+    )
+
+    def fail_late_work(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("missing pixelize config reached transformation or metadata")
+
+    _patch_pixelize_numpy(monkeypatch, pad=fail_late_work, zeros=fail_late_work)
+    monkeypatch.setattr(pixelize_execution, "prepare_cell_grid", fail_late_work)
+    monkeypatch.setattr(pixelize_execution, "pixelize_prepared_grid", fail_late_work)
+    monkeypatch.setattr(pixelize_execution, "build_pixelize_metadata", fail_late_work)
+    monkeypatch.setattr(pixelize_execution, "PixelizeRun", fail_late_work)
+
+    with pytest.raises(ConfigurationError) as raised:
+        pixelize_stage(stage, missing_pixelize, plan)
+
+    assert raised.value.code == "PX_PIXELIZE_CONFIG_001"
 
 
 @pytest.mark.parametrize(

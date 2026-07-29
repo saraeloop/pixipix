@@ -356,19 +356,30 @@ def test_wheel_contains_exact_scale_package_members(
 
 
 @pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
-def test_wheel_contains_pixelize_package_member_only(
+def test_wheel_contains_exact_pixelize_package_members(
     built_artifacts: BuiltArtifacts, artifact_name: str
 ) -> None:
     wheel = getattr(built_artifacts, artifact_name)
     assert isinstance(wheel, Path)
-    source = PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize" / "__init__.py"
+    source_root = PROJECT_ROOT / "src" / "pixipix" / "stages" / "pixelize"
+    expected_members = {
+        f"pixipix/stages/pixelize/{name}": source_root / name
+        for name in (
+            "__init__.py",
+            "api.py",
+            "execution.py",
+            "metadata.py",
+            "planning.py",
+        )
+    }
 
     with zipfile.ZipFile(wheel) as archive:
         members = set(archive.namelist())
-        assert {member for member in members if member.startswith("pixipix/stages/pixelize")} == {
-            "pixipix/stages/pixelize/__init__.py"
-        }
-        assert archive.read("pixipix/stages/pixelize/__init__.py") == source.read_bytes()
+        assert {
+            member for member in members if member.startswith("pixipix/stages/pixelize")
+        } == set(expected_members)
+        for member, source in expected_members.items():
+            assert archive.read(member) == source.read_bytes()
     assert "pixipix/stages/pixelize.py" not in members
 
 
@@ -386,6 +397,10 @@ def test_wheel_scale_and_pixelize_imports_work_outside_checkout(
         "import pathlib, sys; "
         "sys.path.insert(0, sys.argv[1]); "
         "import pixipix.stages.pixelize as pixelize; "
+        "import pixipix.stages.pixelize.api as pixelize_api; "
+        "import pixipix.stages.pixelize.execution as pixelize_execution; "
+        "import pixipix.stages.pixelize.metadata as pixelize_metadata; "
+        "import pixipix.stages.pixelize.planning as pixelize_planning; "
         "import pixipix.stages.scale as scale; "
         "import pixipix.stages.scale.api as api; "
         "import pixipix.stages.scale.execution as execution; "
@@ -394,11 +409,37 @@ def test_wheel_scale_and_pixelize_imports_work_outside_checkout(
         "import pixipix.stages.scale.planning as planning; "
         "assert pathlib.Path(pixelize.__file__).name == '__init__.py'; "
         "assert pixelize.__spec__.submodule_search_locations is not None; "
-        "assert pixelize.PixelizeStagePlan.__module__ == 'pixipix.stages.pixelize'; "
-        "assert pixelize.PixelizeRun.__module__ == 'pixipix.stages.pixelize'; "
-        "assert pixelize.publish_pixelize.__module__ == 'pixipix.stages.pixelize'; "
+        "assert pixelize.publish_pixelize is pixelize_api.publish_pixelize; "
+        "assert pixelize.PreparedCellGrid is pixelize_execution.PreparedCellGrid; "
+        "assert pixelize.CellGridProjection is pixelize_planning.CellGridProjection; "
+        "assert pixelize.PixelizeRun is pixelize_execution.PixelizeRun; "
+        "assert pixelize.PixelizeStagePlan is pixelize_planning.PixelizeStagePlan; "
+        "assert pixelize.project_cell_grid is pixelize_planning.project_cell_grid; "
+        "assert pixelize.prepare_cell_grid is pixelize_execution.prepare_cell_grid; "
+        "assert pixelize.representative_pixel is pixelize_execution.representative_pixel; "
+        "assert pixelize.apply_alpha_policy is pixelize_execution.apply_alpha_policy; "
+        "assert pixelize.pixelize_prepared_grid "
+        "is pixelize_execution.pixelize_prepared_grid; "
+        "assert pixelize.project_pixelize_resources "
+        "is pixelize_planning.project_pixelize_resources; "
+        "assert pixelize.project_pixelize_stage is pixelize_planning.project_pixelize_stage; "
+        "assert pixelize.pixelize_stage is pixelize_execution.pixelize_stage; "
+        "assert pixelize.MAX_PREPARED_PIXELS is pixelize_planning.MAX_PREPARED_PIXELS; "
+        "assert pixelize.PixelizeStagePlan.__module__ "
+        "== 'pixipix.stages.pixelize.planning'; "
+        "assert pixelize.PixelizeRun.__module__ "
+        "== 'pixipix.stages.pixelize.execution'; "
+        "assert pixelize.publish_pixelize.__module__ == 'pixipix.stages.pixelize.api'; "
         "assert pixelize.round_channel_half_away_from_zero "
+        "is pixelize_execution.round_channel_half_away_from_zero "
         "is scale.round_channel_half_away_from_zero; "
+        "assert callable(pixelize_metadata.build_pixelize_metadata); "
+        "assert not hasattr(pixelize, 'decode_stage_input'); "
+        "assert not hasattr(pixelize, 'np'); "
+        "assert not hasattr(pixelize, 'Image'); "
+        "assert not hasattr(pixelize, '_require_pixelize_config'); "
+        "assert not hasattr(pixelize, '_validate_config_handoff'); "
+        "assert not hasattr(pixelize, 'build_pixelize_metadata'); "
         "assert scale.publish_scale is api.publish_scale; "
         "assert scale.ScaleRun is execution.ScaleRun; "
         "assert scale.scale_stage is execution.scale_stage; "
