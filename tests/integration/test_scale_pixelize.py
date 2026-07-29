@@ -427,7 +427,7 @@ def test_metadata_only_resource_scenarios_refuse_before_decode(
         raise AssertionError("decoder must not run for refused declarations")
 
     if stage == "pixelize":
-        monkeypatch.setattr("pixipix.stages.pixelize.decode_stage_input", fail_decode)
+        monkeypatch.setattr("pixipix.stages.pixelize.api.decode_stage_input", fail_decode)
     else:
         monkeypatch.setattr("pixipix.stages.scale.api.decode_stage_input", fail_decode)
 
@@ -481,7 +481,7 @@ def test_admitted_pixelize_uses_package_decoder_binding(
     def mark_decode(_validated: object) -> None:
         raise PixelizeDecoderReached("pixelize package decoder binding reached")
 
-    monkeypatch.setattr("pixipix.stages.pixelize.decode_stage_input", mark_decode)
+    monkeypatch.setattr("pixipix.stages.pixelize.api.decode_stage_input", mark_decode)
 
     with pytest.raises(
         PixelizeDecoderReached,
