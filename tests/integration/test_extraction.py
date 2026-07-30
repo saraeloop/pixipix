@@ -12,7 +12,13 @@ from PIL import Image
 
 from pixipix.config import load_config
 from pixipix.errors import ProcessingError, ResourcePolicyError
-from pixipix.models import StageMetadata
+from pixipix.models import (
+    ExtractionResult,
+    ExtractionRun,
+    FrameImage,
+    InspectionResult,
+    StageMetadata,
+)
 from pixipix.stages import extract as extract_stage
 from pixipix.stages.extract import inspect_source, publish_extraction
 from tests.helpers import extraction_config, transparent_sheet, write_config, write_rgba
@@ -39,6 +45,7 @@ def test_inspection_is_typed_and_does_not_write_artifacts(tmp_path: Path) -> Non
 
     result = inspect_source(image, load_config(config))
 
+    assert type(result) is InspectionResult
     assert result.source.width == 14
     assert len(result.candidates) == 3
     assert len(result.accepted) == 2
@@ -54,6 +61,7 @@ def test_extract_writes_component_only_rgba_frames_and_metadata(tmp_path: Path) 
 
     result = publish_extraction(image, load_config(config), output)
 
+    assert type(result) is ExtractionResult
     assert [frame.name for frame in result.frames] == ["idle", "signal"]
     assert (output / ".pixipix-output").is_file()
     metadata = json.loads((output / "stage.json").read_text(encoding="utf-8"))
@@ -88,6 +96,16 @@ def test_extract_writes_component_only_rgba_frames_and_metadata(tmp_path: Path) 
     assert frame_paths == {
         path.relative_to(output).as_posix() for path in (output / "frames").glob("*.png")
     }
+
+
+def test_extract_run_and_frame_image_identities_are_exact(tmp_path: Path) -> None:
+    image, config = _project(tmp_path)
+
+    run = extract_stage.extract_source(image, load_config(config))
+
+    assert type(run) is ExtractionRun
+    assert type(run.result) is ExtractionResult
+    assert all(type(frame) is FrameImage for frame in run.frame_images)
 
 
 def test_repeated_extractions_are_byte_identical(tmp_path: Path) -> None:
@@ -185,6 +203,34 @@ def test_failed_staging_removes_temporary_directory(
     with pytest.raises(ProcessingError, match="PX_TEST"):
         publish_extraction(image, load_config(config), output)
 
+    assert not output.exists()
+    assert list(tmp_path.glob(".output.pixipix-build-*")) == []
+
+
+def test_admitted_extract_uses_package_crop_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "output"
+
+    class ExtractCropReached(Exception):
+        pass
+
+    def mark_crop(_analysis: object, _component: object, _frame: object) -> None:
+        raise ExtractCropReached("extract package crop binding reached")
+
+    monkeypatch.setattr(extract_stage, "_materialize_frame_crop", mark_crop)
+
+    with pytest.raises(
+        ExtractCropReached,
+        match="extract package crop binding reached",
+    ) as raised:
+        publish_extraction(image, load_config(config), output)
+
+    traceback_names = tuple(entry.name for entry in raised.traceback)
+    assert "extract_source" in traceback_names
+    assert traceback_names[-1] == "mark_crop"
     assert not output.exists()
     assert list(tmp_path.glob(".output.pixipix-build-*")) == []
 

@@ -305,6 +305,87 @@ def test_canonical_smoke_sequence_is_complete_and_ordered() -> None:
 
 
 @pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
+def test_wheel_contains_extract_package_member_only(
+    built_artifacts: BuiltArtifacts, artifact_name: str
+) -> None:
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+    stages_source = PROJECT_ROOT / "src" / "pixipix" / "stages" / "__init__.py"
+    source = PROJECT_ROOT / "src" / "pixipix" / "stages" / "extract" / "__init__.py"
+
+    with zipfile.ZipFile(wheel) as archive:
+        members = set(archive.namelist())
+        assert "pixipix/stages/__init__.py" in members
+        assert {member for member in members if member.startswith("pixipix/stages/extract")} == {
+            "pixipix/stages/extract/__init__.py"
+        }
+        assert archive.read("pixipix/stages/__init__.py") == stages_source.read_bytes()
+        assert archive.read("pixipix/stages/extract/__init__.py") == source.read_bytes()
+    assert "pixipix/stages/extract.py" not in members
+
+
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
+def test_wheel_extract_first_import_preserves_compatibility_outside_checkout(
+    tmp_path: Path,
+    built_artifacts: BuiltArtifacts,
+    artifact_name: str,
+) -> None:
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+    working_directory = tmp_path / f"{artifact_name}-extract-import"
+    working_directory.mkdir()
+    code = (
+        "import inspect, pathlib, sys; "
+        "sys.path.insert(0, sys.argv[1]); "
+        "import pixipix.stages.extract as extract; "
+        "import pixipix.imageio as imageio; "
+        "import pixipix.models as models; "
+        "import pixipix.resources as resources; "
+        "expected = ("
+        "'ComponentMap', '_Analysis', 'label_components', 'filter_components', "
+        "'order_components', '_analyze', 'inspect_source', '_padded_bounds', "
+        "'project_extract_resources', 'project_extracted_frames', "
+        "'_materialize_frame_crop', 'extract_source', '_stage_metadata', "
+        "'_valid_marker', '_frame_path', '_valid_frame_png', "
+        "'_validate_staged_payload', '_validate_staged_output', '_valid_owned_output', "
+        "'_is_trusted_system_tmp_alias', '_validate_output_location', '_prepare_target', "
+        "'_remove_temporary_tree', 'publish_extraction', 'Image', 'np', 'load_source', "
+        "'write_png'); "
+        "assert all(hasattr(extract, name) for name in expected); "
+        "assert pathlib.Path(extract.__file__).name == '__init__.py'; "
+        "assert extract.__spec__.submodule_search_locations is not None; "
+        "assert extract.ComponentMap.__module__ == 'pixipix.stages.extract'; "
+        "assert extract._Analysis.__module__ == 'pixipix.stages.extract'; "
+        "assert extract.inspect_source.__module__ == 'pixipix.stages.extract'; "
+        "assert extract.extract_source.__module__ == 'pixipix.stages.extract'; "
+        "assert extract.publish_extraction.__module__ == 'pixipix.stages.extract'; "
+        "assert extract.ExtractionRun is models.ExtractionRun; "
+        "assert extract.ExtractionResult is models.ExtractionResult; "
+        "assert extract.ExtractedFrame is models.ExtractedFrame; "
+        "assert extract.FrameImage is models.FrameImage; "
+        "assert extract.InspectionResult is models.InspectionResult; "
+        "assert extract.ResourceProjection is resources.ResourceProjection; "
+        "assert extract.load_source is imageio.load_source; "
+        "assert extract.write_png is imageio.write_png; "
+        "assert str(inspect.signature(extract.publish_extraction)) == "
+        "\"(input_path: 'Path', loaded: 'LoadedConfig', output: 'Path', "
+        "*, force: 'bool' = False) -> 'ExtractionResult'\"; "
+        "assert sys.modules['pixipix.stages.extract'] is extract; "
+        "assert 'pixipix.stages.extract.__init__' not in sys.modules; "
+        "print(pathlib.Path(extract.__file__).resolve())"
+    )
+
+    result = _run(
+        [sys.executable, "-I", "-c", code, wheel.resolve()],
+        cwd=working_directory,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert str(wheel.resolve()) in result.stdout
+    assert str(PROJECT_ROOT.resolve()) not in result.stdout
+
+
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
 def test_wheel_contains_align_package_member_only(
     built_artifacts: BuiltArtifacts, artifact_name: str
 ) -> None:

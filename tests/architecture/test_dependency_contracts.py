@@ -832,6 +832,19 @@ def test_stage_implementations_do_not_import_stages_io_facade() -> None:
     )
 
 
+def test_extract_package_is_one_monolithic_implementation_module() -> None:
+    package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "extract"
+    source_files = sorted(
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+
+    assert source_files == ["__init__.py"]
+    assert not (package.parent / "extract.py").exists()
+    assert _module(package / "__init__.py") == "pixipix.stages.extract"
+
+
 def test_scale_internal_module_set_and_dependency_direction_are_exact() -> None:
     modules = {_module(path) for path in _production_files()}
     actual_modules = {
