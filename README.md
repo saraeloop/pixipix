@@ -11,15 +11,16 @@
 
 <p align="center"><strong>Tiny poses in. Tidy pixels out.</strong></p>
 
-PixiPix is a deterministic, local-first command-line tool for extracting isolated
-visual frames from PNG source sheets, scaling them with one shared geometric ruler,
-converting configured pseudo-pixel cells into true logical RGBA pixels, and placing
-those frames on deterministic fixed-size canvases.
+PixiPix is a deterministic, local-first command-line pipeline for transforming PNG
+source sheets into isolated, consistently scaled, pixelized, and aligned RGBA frames.
+It extracts visual components, applies a shared geometric scale, converts configured
+pseudo-pixel cells into true logical pixels, and places every frame on a deterministic
+fixed-size canvas.
 
-PixiPix is content- and source-agnostic. It never recognizes subjects or
-infers what a frame depicts, and it never asks how a sheet was made:
-hand-drawn, rendered, scanned, exported, procedurally generated, and
-AI-generated raster inputs all work identically.
+PixiPix is content- and source-agnostic. It does not recognize subjects, infer what a
+frame depicts, or care how a source sheet was created. Hand-drawn, rendered, scanned,
+exported, procedurally generated, and AI-generated raster inputs are all processed
+identically.
 
 > **Note:**
 > PixiPix is in active development. APIs and output contracts may change

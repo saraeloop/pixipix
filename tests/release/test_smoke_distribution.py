@@ -305,22 +305,35 @@ def test_canonical_smoke_sequence_is_complete_and_ordered() -> None:
 
 
 @pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
-def test_wheel_contains_extract_package_member_only(
+def test_wheel_contains_exact_extract_package_members(
     built_artifacts: BuiltArtifacts, artifact_name: str
 ) -> None:
     wheel = getattr(built_artifacts, artifact_name)
     assert isinstance(wheel, Path)
     stages_source = PROJECT_ROOT / "src" / "pixipix" / "stages" / "__init__.py"
-    source = PROJECT_ROOT / "src" / "pixipix" / "stages" / "extract" / "__init__.py"
+    source_root = PROJECT_ROOT / "src" / "pixipix" / "stages" / "extract"
+    expected_members = {
+        f"pixipix/stages/extract/{name}": source_root / name
+        for name in (
+            "__init__.py",
+            "analysis.py",
+            "api.py",
+            "execution.py",
+            "metadata.py",
+            "planning.py",
+            "publication.py",
+        )
+    }
 
     with zipfile.ZipFile(wheel) as archive:
         members = set(archive.namelist())
         assert "pixipix/stages/__init__.py" in members
-        assert {member for member in members if member.startswith("pixipix/stages/extract")} == {
-            "pixipix/stages/extract/__init__.py"
-        }
+        assert {member for member in members if member.startswith("pixipix/stages/extract")} == set(
+            expected_members
+        )
         assert archive.read("pixipix/stages/__init__.py") == stages_source.read_bytes()
-        assert archive.read("pixipix/stages/extract/__init__.py") == source.read_bytes()
+        for member, source in expected_members.items():
+            assert archive.read(member) == source.read_bytes()
     assert "pixipix/stages/extract.py" not in members
 
 
@@ -338,35 +351,58 @@ def test_wheel_extract_first_import_preserves_compatibility_outside_checkout(
         "import inspect, pathlib, sys; "
         "sys.path.insert(0, sys.argv[1]); "
         "import pixipix.stages.extract as extract; "
-        "import pixipix.imageio as imageio; "
+        "import pixipix.stages.extract.analysis as analysis; "
+        "import pixipix.stages.extract.api as api; "
+        "import pixipix.stages.extract.execution as execution; "
+        "import pixipix.stages.extract.metadata as metadata; "
+        "import pixipix.stages.extract.planning as planning; "
+        "import pixipix.stages.extract.publication as publication; "
         "import pixipix.models as models; "
         "import pixipix.resources as resources; "
         "expected = ("
-        "'ComponentMap', '_Analysis', 'label_components', 'filter_components', "
-        "'order_components', '_analyze', 'inspect_source', '_padded_bounds', "
-        "'project_extract_resources', 'project_extracted_frames', "
-        "'_materialize_frame_crop', 'extract_source', '_stage_metadata', "
-        "'_valid_marker', '_frame_path', '_valid_frame_png', "
-        "'_validate_staged_payload', '_validate_staged_output', '_valid_owned_output', "
-        "'_is_trusted_system_tmp_alias', '_validate_output_location', '_prepare_target', "
-        "'_remove_temporary_tree', 'publish_extraction', 'Image', 'np', 'load_source', "
-        "'write_png'); "
+        "'ComponentMap', 'label_components', 'filter_components', 'order_components', "
+        "'inspect_source', 'extract_source', 'project_extract_resources', "
+        "'project_extracted_frames', 'publish_extraction'); "
         "assert all(hasattr(extract, name) for name in expected); "
         "assert pathlib.Path(extract.__file__).name == '__init__.py'; "
         "assert extract.__spec__.submodule_search_locations is not None; "
-        "assert extract.ComponentMap.__module__ == 'pixipix.stages.extract'; "
-        "assert extract._Analysis.__module__ == 'pixipix.stages.extract'; "
-        "assert extract.inspect_source.__module__ == 'pixipix.stages.extract'; "
-        "assert extract.extract_source.__module__ == 'pixipix.stages.extract'; "
-        "assert extract.publish_extraction.__module__ == 'pixipix.stages.extract'; "
-        "assert extract.ExtractionRun is models.ExtractionRun; "
-        "assert extract.ExtractionResult is models.ExtractionResult; "
-        "assert extract.ExtractedFrame is models.ExtractedFrame; "
-        "assert extract.FrameImage is models.FrameImage; "
-        "assert extract.InspectionResult is models.InspectionResult; "
-        "assert extract.ResourceProjection is resources.ResourceProjection; "
-        "assert extract.load_source is imageio.load_source; "
-        "assert extract.write_png is imageio.write_png; "
+        "assert extract.ComponentMap is analysis.ComponentMap; "
+        "assert extract.label_components is analysis.label_components; "
+        "assert extract.filter_components is analysis.filter_components; "
+        "assert extract.order_components is analysis.order_components; "
+        "assert extract.inspect_source is api.inspect_source; "
+        "assert extract.extract_source is api.extract_source; "
+        "assert extract.project_extract_resources is planning.project_extract_resources; "
+        "assert extract.project_extracted_frames is planning.project_extracted_frames; "
+        "assert extract.publish_extraction is publication.publish_extraction; "
+        "assert analysis.ComponentMap.__module__ == 'pixipix.stages.extract.analysis'; "
+        "assert analysis._Analysis.__module__ == 'pixipix.stages.extract.analysis'; "
+        "assert api.inspect_source.__module__ == 'pixipix.stages.extract.api'; "
+        "assert api.extract_source.__module__ == 'pixipix.stages.extract.api'; "
+        "assert planning.project_extract_resources.__module__ "
+        "== 'pixipix.stages.extract.planning'; "
+        "assert publication.publish_extraction.__module__ "
+        "== 'pixipix.stages.extract.publication'; "
+        "assert api.InspectionResult is models.InspectionResult; "
+        "assert api.ExtractionRun is models.ExtractionRun; "
+        "assert api.ExtractionResult is models.ExtractionResult; "
+        "assert execution.ExtractedFrame is models.ExtractedFrame; "
+        "assert execution.FrameImage is models.FrameImage; "
+        "assert planning.ExtractedFrame is models.ExtractedFrame; "
+        "assert planning.ResourceProjection is resources.ResourceProjection; "
+        "assert callable(metadata._stage_metadata); "
+        "assert callable(publication._valid_owned_output); "
+        "assert not hasattr(extract, '_Analysis'); "
+        "assert not hasattr(extract, '_analyze'); "
+        "assert not hasattr(extract, '_padded_bounds'); "
+        "assert not hasattr(extract, '_materialize_frame_crop'); "
+        "assert not hasattr(extract, '_valid_frame_png'); "
+        "assert not hasattr(extract, '_validate_staged_output'); "
+        "assert not hasattr(extract, '_validate_output_location'); "
+        "assert not hasattr(extract, 'np'); "
+        "assert not hasattr(extract, 'Image'); "
+        "assert not hasattr(extract, 'load_source'); "
+        "assert not hasattr(extract, 'write_png'); "
         "assert str(inspect.signature(extract.publish_extraction)) == "
         "\"(input_path: 'Path', loaded: 'LoadedConfig', output: 'Path', "
         "*, force: 'bool' = False) -> 'ExtractionResult'\"; "
