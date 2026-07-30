@@ -53,6 +53,135 @@ STAGE_PUBLISHERS = {
     "publish_pixelize",
     "publish_align",
 }
+EXTRACT_MODULES = {
+    "pixipix.stages.extract",
+    "pixipix.stages.extract.analysis",
+    "pixipix.stages.extract.api",
+    "pixipix.stages.extract.execution",
+    "pixipix.stages.extract.metadata",
+    "pixipix.stages.extract.planning",
+    "pixipix.stages.extract.publication",
+}
+EXTRACT_ALLOWED_INTERNAL_SYMBOLS = {
+    ("pixipix.stages.extract", "pixipix.stages.extract.analysis"): {
+        "ComponentMap",
+        "filter_components",
+        "label_components",
+        "order_components",
+    },
+    ("pixipix.stages.extract", "pixipix.stages.extract.api"): {
+        "extract_source",
+        "inspect_source",
+    },
+    ("pixipix.stages.extract", "pixipix.stages.extract.planning"): {
+        "project_extract_resources",
+        "project_extracted_frames",
+    },
+    ("pixipix.stages.extract", "pixipix.stages.extract.publication"): {
+        "publish_extraction",
+    },
+    ("pixipix.stages.extract.api", "pixipix.stages.extract.analysis"): {
+        "_analyze",
+    },
+    ("pixipix.stages.extract.api", "pixipix.stages.extract.execution"): {
+        "_materialize_frame_crop",
+    },
+    ("pixipix.stages.extract.api", "pixipix.stages.extract.planning"): {
+        "project_extract_resources",
+        "project_extracted_frames",
+    },
+    ("pixipix.stages.extract.execution", "pixipix.stages.extract.analysis"): {
+        "_Analysis",
+    },
+    ("pixipix.stages.extract.planning", "pixipix.stages.extract.analysis"): {
+        "_Analysis",
+    },
+    ("pixipix.stages.extract.publication", "pixipix.stages.extract.api"): {
+        "extract_source",
+    },
+    ("pixipix.stages.extract.publication", "pixipix.stages.extract.metadata"): {
+        "_stage_metadata",
+    },
+}
+EXTRACT_ALLOWED_PIXIPIX_DEPENDENCIES = {
+    "pixipix.stages.extract": {
+        "pixipix.stages.extract.analysis",
+        "pixipix.stages.extract.api",
+        "pixipix.stages.extract.planning",
+        "pixipix.stages.extract.publication",
+    },
+    "pixipix.stages.extract.analysis": {
+        "pixipix.config",
+        "pixipix.errors",
+        "pixipix.imageio",
+        "pixipix.models",
+    },
+    "pixipix.stages.extract.api": {
+        "pixipix.config",
+        "pixipix.errors",
+        "pixipix.models",
+        "pixipix.resources",
+        "pixipix.stages.extract.analysis",
+        "pixipix.stages.extract.execution",
+        "pixipix.stages.extract.planning",
+    },
+    "pixipix.stages.extract.execution": {
+        "pixipix.models",
+        "pixipix.stages.extract.analysis",
+    },
+    "pixipix.stages.extract.metadata": {
+        "pixipix",
+        "pixipix.config",
+        "pixipix.models",
+    },
+    "pixipix.stages.extract.planning": {
+        "pixipix.config",
+        "pixipix.models",
+        "pixipix.resources",
+        "pixipix.stages.extract.analysis",
+    },
+    "pixipix.stages.extract.publication": {
+        "pixipix.config",
+        "pixipix.errors",
+        "pixipix.imageio",
+        "pixipix.models",
+        "pixipix.serialization",
+        "pixipix.stages.extract.api",
+        "pixipix.stages.extract.metadata",
+    },
+}
+EXTRACT_ALLOWED_EXTERNAL_IMPORTS = {
+    "pixipix.stages.extract": set(),
+    "pixipix.stages.extract.analysis": {
+        "__future__",
+        "collections",
+        "dataclasses",
+        "numpy",
+        "numpy.typing",
+        "pathlib",
+    },
+    "pixipix.stages.extract.api": {"__future__", "pathlib"},
+    "pixipix.stages.extract.execution": {"__future__", "numpy"},
+    "pixipix.stages.extract.metadata": {"__future__"},
+    "pixipix.stages.extract.planning": {"__future__", "pathlib"},
+    "pixipix.stages.extract.publication": {
+        "PIL",
+        "__future__",
+        "contextlib",
+        "json",
+        "pathlib",
+        "shutil",
+        "stat",
+        "tempfile",
+    },
+}
+EXTRACT_ALLOWED_ROOT_IMPORTS = {
+    (
+        "pixipix.stages.extract.metadata",
+        "pixipix",
+        ("__version__",),
+    ),
+}
 ALIGN_MODULES = {
     "pixipix.stages.align",
     "pixipix.stages.align.api",
@@ -395,6 +524,8 @@ class ImportEdge:
     names: tuple[str, ...]
     line: int
     hard: bool
+    renamed: bool
+    hidden: bool
 
 
 class _ImportCollector(ast.NodeVisitor):
@@ -404,27 +535,81 @@ class _ImportCollector(ast.NodeVisitor):
         self.edges: list[ImportEdge] = []
         self._scope_depth = 0
         self._type_checking_depth = 0
+        self._hidden_depth = 0
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._scope_depth += 1
+        self._hidden_depth += 1
         self.generic_visit(node)
+        self._hidden_depth -= 1
         self._scope_depth -= 1
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._scope_depth += 1
+        self._hidden_depth += 1
         self.generic_visit(node)
+        self._hidden_depth -= 1
         self._scope_depth -= 1
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._hidden_depth += 1
+        self.generic_visit(node)
+        self._hidden_depth -= 1
 
     def visit_If(self, node: ast.If) -> None:
         is_type_checking = isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING"
         if is_type_checking:
             self._type_checking_depth += 1
+        self._hidden_depth += 1
         for statement in node.body:
             self.visit(statement)
+        self._hidden_depth -= 1
         if is_type_checking:
             self._type_checking_depth -= 1
+        self._hidden_depth += 1
         for statement in node.orelse:
             self.visit(statement)
+        self._hidden_depth -= 1
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self._hidden_depth += 1
+        self.generic_visit(node)
+        self._hidden_depth -= 1
+
+    def visit_TryStar(self, node: ast.TryStar) -> None:
+        self._hidden_depth += 1
+        self.generic_visit(node)
+        self._hidden_depth -= 1
+
+    def visit_With(self, node: ast.With) -> None:
+        self._hidden_depth += 1
+        self.generic_visit(node)
+        self._hidden_depth -= 1
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self._hidden_depth += 1
+        self.generic_visit(node)
+        self._hidden_depth -= 1
+
+    def visit_For(self, node: ast.For) -> None:
+        self._hidden_depth += 1
+        self.generic_visit(node)
+        self._hidden_depth -= 1
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self._hidden_depth += 1
+        self.generic_visit(node)
+        self._hidden_depth -= 1
+
+    def visit_While(self, node: ast.While) -> None:
+        self._hidden_depth += 1
+        self.generic_visit(node)
+        self._hidden_depth -= 1
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self._hidden_depth += 1
+        self.generic_visit(node)
+        self._hidden_depth -= 1
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -435,6 +620,8 @@ class _ImportCollector(ast.NodeVisitor):
                     (),
                     node.lineno,
                     self._scope_depth == 0 and self._type_checking_depth == 0,
+                    alias.asname is not None and alias.asname != alias.name,
+                    self._hidden_depth > 0,
                 )
             )
 
@@ -452,6 +639,10 @@ class _ImportCollector(ast.NodeVisitor):
                 tuple(alias.name for alias in node.names),
                 node.lineno,
                 self._scope_depth == 0 and self._type_checking_depth == 0,
+                any(
+                    alias.asname is not None and alias.asname != alias.name for alias in node.names
+                ),
+                self._hidden_depth > 0,
             )
         )
 
@@ -676,6 +867,45 @@ def _scale_dependency_violations(
     return violations, internal_symbols, root_imports
 
 
+def _extract_dependency_violations(
+    edges: list[ImportEdge],
+    modules: set[str],
+) -> tuple[list[str], dict[tuple[str, str], set[str]], set[tuple[str, str, tuple[str, ...]]]]:
+    violations: list[str] = []
+    internal_symbols: dict[tuple[str, str], set[str]] = {}
+    root_imports: set[tuple[str, str, tuple[str, ...]]] = set()
+    for edge in edges:
+        if edge.importer not in EXTRACT_MODULES:
+            continue
+        if (
+            not edge.imported.startswith("pixipix")
+            and edge.imported not in EXTRACT_ALLOWED_EXTERNAL_IMPORTS[edge.importer]
+        ):
+            violations.append(_failure("extract external capability", edge))
+        if edge.imported == "pixipix":
+            root_import = (edge.importer, edge.imported, edge.names)
+            root_imports.add(root_import)
+            if root_import not in EXTRACT_ALLOWED_ROOT_IMPORTS:
+                violations.append(_failure("extract package-root capability", edge))
+        for target in _target_modules(edge, modules):
+            if target in EXTRACT_MODULES:
+                key = (edge.importer, target)
+                internal_symbols.setdefault(key, set()).update(edge.names)
+                allowed_symbols = EXTRACT_ALLOWED_INTERNAL_SYMBOLS.get(key)
+                if edge.renamed:
+                    violations.append(_failure("extract internal import alias", edge))
+                if edge.hidden:
+                    violations.append(_failure("extract hidden internal import", edge))
+                if allowed_symbols is None or not edge.names or set(edge.names) - allowed_symbols:
+                    violations.append(_failure("extract internal dependency direction", edge))
+            if (
+                target.startswith("pixipix")
+                and target not in EXTRACT_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
+            ):
+                violations.append(_failure("extract layer capability", edge))
+    return violations, internal_symbols, root_imports
+
+
 def _pixelize_dependency_violations(
     edges: list[ImportEdge],
     modules: set[str],
@@ -723,6 +953,11 @@ def _pixelize_dependency_violations(
 def test_only_cli_imports_stage_command_publishers() -> None:
     modules = {_module(path) for path in _production_files()}
     facade_reexports = {
+        (
+            "pixipix.stages.extract",
+            "pixipix.stages.extract.publication",
+            ("publish_extraction",),
+        ),
         (
             "pixipix.stages.align",
             "pixipix.stages.align.api",
@@ -832,17 +1067,157 @@ def test_stage_implementations_do_not_import_stages_io_facade() -> None:
     )
 
 
-def test_extract_package_is_one_monolithic_implementation_module() -> None:
-    package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "extract"
-    source_files = sorted(
-        path.relative_to(package).as_posix()
-        for path in package.rglob("*.py")
-        if "__pycache__" not in path.parts
+def test_extract_internal_module_set_and_dependency_direction_are_exact() -> None:
+    modules = {_module(path) for path in _production_files()}
+    actual_modules = {
+        module
+        for module in modules
+        if module == "pixipix.stages.extract" or module.startswith("pixipix.stages.extract.")
+    }
+    assert actual_modules == EXTRACT_MODULES, (
+        "extract internal module set differs: "
+        f"missing={sorted(EXTRACT_MODULES - actual_modules)}, "
+        f"unexpected={sorted(actual_modules - EXTRACT_MODULES)}"
+    )
+    assert not (PROJECT_ROOT / "src" / "pixipix" / "stages" / "extract.py").exists()
+
+    violations, internal_symbols, root_imports = _extract_dependency_violations(
+        _edges(),
+        modules,
+    )
+    dynamic_imports: list[str] = []
+    for path in _production_files():
+        importer = _module(path)
+        if importer in EXTRACT_MODULES:
+            dynamic_imports.extend(
+                _dynamic_import_violations(
+                    importer,
+                    ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
+                )
+            )
+
+    assert not violations, "\n".join(violations)
+    assert not dynamic_imports, "\n".join(dynamic_imports)
+    assert root_imports == EXTRACT_ALLOWED_ROOT_IMPORTS
+    assert internal_symbols == EXTRACT_ALLOWED_INTERNAL_SYMBOLS, (
+        "extract internal dependency graph differs: "
+        f"missing={sorted(set(EXTRACT_ALLOWED_INTERNAL_SYMBOLS) - set(internal_symbols))}, "
+        f"unexpected={sorted(set(internal_symbols) - set(EXTRACT_ALLOWED_INTERNAL_SYMBOLS))}, "
+        f"symbols={internal_symbols}"
+    )
+    assert (
+        "pixipix.stages.extract.publication",
+        "pixipix.stages.extract.api",
+    ) in internal_symbols, (
+        "Extract-specific approved exception missing: publication must import "
+        "api.extract_source; this does not authorize api -> publication"
     )
 
-    assert source_files == ["__init__.py"]
-    assert not (package.parent / "extract.py").exists()
-    assert _module(package / "__init__.py") == "pixipix.stages.extract"
+
+def test_extract_dependency_rule_rejects_layer_and_module_bypasses() -> None:
+    modules = {"pixipix", *EXTRACT_MODULES}
+    cases = (
+        (
+            "pixipix.stages.extract.api",
+            "pixipix.stages.extract",
+            "from .publication import publish_extraction",
+        ),
+        (
+            "pixipix.stages.extract.api",
+            "pixipix.stages.extract",
+            "from .publication import publish_extraction as publish",
+        ),
+        (
+            "pixipix.stages.extract.publication",
+            "pixipix.stages.extract",
+            "from .api import extract_source as run_extract",
+        ),
+        (
+            "pixipix.stages.extract.publication",
+            "pixipix.stages.extract",
+            "def load():\n    from .api import extract_source",
+        ),
+        (
+            "pixipix.stages.extract.publication",
+            "pixipix.stages.extract",
+            "if True:\n    from .api import extract_source",
+        ),
+        (
+            "pixipix.stages.extract.publication",
+            "pixipix.stages.extract",
+            "try:\n    from .api import extract_source\nexcept ImportError:\n    pass",
+        ),
+        (
+            "pixipix.stages.extract.publication",
+            "pixipix.stages.extract",
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from .api import extract_source",
+        ),
+        (
+            "pixipix.stages.extract.api",
+            "pixipix.stages.extract",
+            "def load():\n    from .publication import publish_extraction",
+        ),
+        (
+            "pixipix.stages.extract.api",
+            "pixipix.stages.extract",
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from .publication import publish_extraction",
+        ),
+        (
+            "pixipix.stages.extract.metadata",
+            "pixipix.stages.extract",
+            "from .api import extract_source",
+        ),
+        (
+            "pixipix.stages.extract.publication",
+            "pixipix.stages.extract",
+            "from .analysis import _Analysis",
+        ),
+        (
+            "pixipix.stages.extract.planning",
+            "pixipix.stages.extract",
+            "import pixipix.stages.extract.analysis as analysis",
+        ),
+        (
+            "pixipix.stages.extract.planning",
+            "pixipix.stages.extract",
+            "from .analysis import *",
+        ),
+        (
+            "pixipix.stages.extract.api",
+            "pixipix.stages.extract",
+            "from pixipix.stages.extract import ComponentMap",
+        ),
+        (
+            "pixipix.stages.extract.metadata",
+            "pixipix.stages.extract",
+            "from pixipix import cli",
+        ),
+    )
+    for importer, package, source in cases:
+        violations, _symbols, _root_imports = _extract_dependency_violations(
+            _collect_source(importer, package, source),
+            modules,
+        )
+        assert violations, f"extract dependency bypass was accepted: {source}"
+
+
+def test_extract_dependency_rule_rejects_dynamic_imports() -> None:
+    cases = (
+        "__import__('pixipix.stages.extract.analysis')",
+        "load = __import__\nload('pixipix.stages.extract.analysis')",
+        "import importlib\nimportlib.import_module('pixipix.stages.extract.analysis')",
+        "from importlib import import_module as load\nload('pixipix.stages.extract.analysis')",
+    )
+    for source in cases:
+        violations = _dynamic_import_violations(
+            "pixipix.stages.extract.api",
+            ast.parse(source),
+        )
+        assert violations, f"extract dynamic import bypass was accepted: {source}"
 
 
 def test_scale_internal_module_set_and_dependency_direction_are_exact() -> None:

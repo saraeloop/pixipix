@@ -10,6 +10,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import pixipix.stages.extract.api as extract_api
+import pixipix.stages.extract.publication as extract_publication
 from pixipix.config import load_config
 from pixipix.errors import ProcessingError, ResourcePolicyError
 from pixipix.models import (
@@ -199,7 +201,7 @@ def test_failed_staging_removes_temporary_directory(
     def fail_write(_path: Path, _pixels: object) -> None:
         raise ProcessingError("PX_TEST", "encode", "simulated failure")
 
-    monkeypatch.setattr(extract_stage, "write_png", fail_write)
+    monkeypatch.setattr(extract_publication, "write_png", fail_write)
     with pytest.raises(ProcessingError, match="PX_TEST"):
         publish_extraction(image, load_config(config), output)
 
@@ -220,7 +222,7 @@ def test_admitted_extract_uses_package_crop_binding(
     def mark_crop(_analysis: object, _component: object, _frame: object) -> None:
         raise ExtractCropReached("extract package crop binding reached")
 
-    monkeypatch.setattr(extract_stage, "_materialize_frame_crop", mark_crop)
+    monkeypatch.setattr(extract_api, "_materialize_frame_crop", mark_crop)
 
     with pytest.raises(
         ExtractCropReached,
@@ -288,14 +290,18 @@ def test_target_created_during_staging_is_revalidated(
 ) -> None:
     image, config = _project(tmp_path)
     output = tmp_path / "raced"
-    original_validate = extract_stage._validate_staged_output
+    original_validate = extract_publication._validate_staged_output
 
     def create_foreign_target(root: Path, metadata: StageMetadata) -> None:
         original_validate(root, metadata)
         output.mkdir()
         (output / "keep.txt").write_text("important", encoding="utf-8")
 
-    monkeypatch.setattr(extract_stage, "_validate_staged_output", create_foreign_target)
+    monkeypatch.setattr(
+        extract_publication,
+        "_validate_staged_output",
+        create_foreign_target,
+    )
     with pytest.raises(ProcessingError, match="PX_OUTPUT_002"):
         publish_extraction(image, load_config(config), output)
 
@@ -352,7 +358,7 @@ def test_extract_resource_checkpoint_precedes_crop_and_preserves_owned_output(
     def fail_crop(_analysis: object, _component: object, _frame: object) -> None:
         raise AssertionError("frame crop must not materialize before resource admission")
 
-    monkeypatch.setattr(extract_stage, "_materialize_frame_crop", fail_crop)
+    monkeypatch.setattr(extract_api, "_materialize_frame_crop", fail_crop)
     with pytest.raises(ResourcePolicyError) as raised:
         publish_extraction(image, load_config(refused_config), output, force=True)
 
@@ -420,7 +426,7 @@ def test_root_owned_standard_tmp_alias_is_allowed_when_present() -> None:
     if not Path("/tmp").is_symlink():
         pytest.skip("platform /tmp is not a symlink")
 
-    extract_stage._validate_output_location(Path("/tmp/pixipix-validation-probe"))
+    extract_publication._validate_output_location(Path("/tmp/pixipix-validation-probe"))
 
 
 def test_previous_output_is_restored_on_publication_failure(
