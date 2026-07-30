@@ -515,6 +515,18 @@ PIXELIZE_ALLOWED_PIPELINE_SYMBOLS = {
         "ValidatedStageInput",
     },
 }
+CHANNEL_ROUNDING_SYMBOL = "round_channel_half_away_from_zero"
+CHANNEL_ROUNDING_OWNER = "pixipix.stages.scale.geometry"
+CHANNEL_ROUNDING_CONSUMER = "pixipix.stages.pixelize.execution"
+CHANNEL_ROUNDING_CALL_SITE = "_alpha_weighted_majority"
+CHANNEL_ROUNDING_FUNCTION_SOURCE = """
+def round_channel_half_away_from_zero(value: float) -> int:
+    if not math.isfinite(value):
+        raise ValueError("channel value must be finite")
+    magnitude = math.floor(abs(value) + 0.5)
+    rounded = magnitude if value >= 0 else -magnitude
+    return min(255, max(0, rounded))
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -827,6 +839,144 @@ def _failure(rule: str, edge: ImportEdge) -> str:
     return f"{rule}: {edge.importer} imports {edge.imported}{names} at production line {edge.line}"
 
 
+def _channel_rounding_import_failure(reason: str, edge: ImportEdge) -> str:
+    return f"{reason} {_failure('channel-rounding dependency', edge)}"
+
+
+def _channel_rounding_calls(
+    module: str,
+    tree: ast.AST,
+) -> list[tuple[str, str | None, int]]:
+    calls: list[tuple[str, str | None, int]] = []
+    function_stack: list[str] = []
+
+    class CallCollector(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            function_stack.append(node.name)
+            self.generic_visit(node)
+            function_stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            function_stack.append(node.name)
+            self.generic_visit(node)
+            function_stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if isinstance(node.func, ast.Name) and node.func.id == CHANNEL_ROUNDING_SYMBOL:
+                calls.append(
+                    (
+                        module,
+                        function_stack[-1] if function_stack else None,
+                        node.lineno,
+                    )
+                )
+            self.generic_visit(node)
+
+    CallCollector().visit(tree)
+    return calls
+
+
+def _function_body_without_docstring(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str:
+    body = function.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    return ast.dump(
+        ast.Module(body=body, type_ignores=[]),
+        include_attributes=False,
+    )
+
+
+def _annotation_dump(annotation: ast.expr | None) -> str | None:
+    return None if annotation is None else ast.dump(annotation, include_attributes=False)
+
+
+def _channel_rounding_definition_contract(
+    definition: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str | None, list[ast.expr], str]:
+    return (
+        ast.dump(definition.args, include_attributes=False),
+        _annotation_dump(definition.returns),
+        definition.decorator_list,
+        _function_body_without_docstring(definition),
+    )
+
+
+def _channel_rounding_definitions(
+    trees: dict[str, ast.Module],
+) -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
+    return [
+        (module, node)
+        for module, tree in trees.items()
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == CHANNEL_ROUNDING_SYMBOL
+    ]
+
+
+def _channel_rounding_exact_body_duplicates(
+    trees: dict[str, ast.Module],
+    definition: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[tuple[str, str, int]]:
+    owner_body = _function_body_without_docstring(definition)
+    return [
+        (module, node.name, node.lineno)
+        for module, tree in trees.items()
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node is not definition
+        and _function_body_without_docstring(node) == owner_body
+    ]
+
+
+def _assert_channel_rounding_call_contract(
+    calls: list[tuple[str, str | None, int]],
+) -> None:
+    scale_calls = [call for call in calls if call[0].startswith("pixipix.stages.scale")]
+    assert len(scale_calls) == 2 and all(
+        module == "pixipix.stages.scale.execution" and function == "premultiplied_box_resize"
+        for module, function, _line in scale_calls
+    ), (
+        "Channel-rounding Scale-internal invocation inventory changed. ADR-004 "
+        f"records two calls in premultiplied_box_resize; found {scale_calls}"
+    )
+
+    non_scale_calls = [call for call in calls if not call[0].startswith("pixipix.stages.scale")]
+    assert non_scale_calls, (
+        "Channel-rounding ownership contract changed: the approved non-Scale "
+        f"production call in {CHANNEL_ROUNDING_CONSUMER}."
+        f"{CHANNEL_ROUNDING_CALL_SITE} is missing. Reopen ADR-004 before accepting "
+        "the change."
+    )
+    consumer_modules = {module for module, _function, _line in non_scale_calls}
+    assert consumer_modules == {CHANNEL_ROUNDING_CONSUMER}, (
+        "Channel-rounding ownership contract changed: new production consumer "
+        f"detected {sorted(consumer_modules)}. Reopen ADR-004 before expanding "
+        "this dependency."
+    )
+    assert len(non_scale_calls) == 1, (
+        "Channel-rounding ownership contract changed: new production call site "
+        f"detected {non_scale_calls}. Reopen ADR-004 before adding another call."
+    )
+    call_module, call_owner, _call_line = non_scale_calls[0]
+    assert (call_module, call_owner) == (
+        CHANNEL_ROUNDING_CONSUMER,
+        CHANNEL_ROUNDING_CALL_SITE,
+    ), (
+        "Channel-rounding call-site owner changed. ADR-004 requires the sole "
+        "non-Scale call to remain in "
+        f"{CHANNEL_ROUNDING_CONSUMER}.{CHANNEL_ROUNDING_CALL_SITE}; found "
+        f"{call_module}.{call_owner}. Reconfirm or reopen ADR-004 before accepting "
+        "the changed call-site owner."
+    )
+
+
 def _scale_dependency_violations(
     edges: list[ImportEdge],
     modules: set[str],
@@ -938,10 +1088,61 @@ def _pixelize_dependency_violations(
                 allowed_symbols = PIXELIZE_ALLOWED_INTERNAL_SYMBOLS.get(key)
                 if allowed_symbols is None or not edge.names or set(edge.names) - allowed_symbols:
                     violations.append(_failure("pixelize internal dependency direction", edge))
-            if target == "pixipix.stages.scale" and edge.names != (
-                "round_channel_half_away_from_zero",
-            ):
-                violations.append(_failure("pixelize scale capability", edge))
+            if target == "pixipix.stages.scale":
+                if edge.names != (CHANNEL_ROUNDING_SYMBOL,):
+                    if edge.imported == "pixipix.stages" and edge.names == ("scale",):
+                        reason = (
+                            "Pixelize must import the approved channel-rounding symbol "
+                            "from the Scale facade directly; package-root Scale access "
+                            "conceals the exact capability."
+                        )
+                    elif edge.imported == "pixipix.stages.scale" and not edge.names:
+                        reason = (
+                            "Pixelize may not import the whole Scale module; the "
+                            "approved dependency exposes one exact facade symbol."
+                        )
+                    elif edge.imported == "pixipix.stages.scale" and edge.names == ("*",):
+                        reason = (
+                            "Pixelize may not use a wildcard Scale import; the approved "
+                            "dependency exposes only round_channel_half_away_from_zero."
+                        )
+                    else:
+                        reason = (
+                            "Pixelize may import only round_channel_half_away_from_zero "
+                            "from the Scale compatibility facade."
+                        )
+                    violations.append(
+                        _channel_rounding_import_failure(
+                            reason,
+                            edge,
+                        )
+                    )
+                if edge.names == (CHANNEL_ROUNDING_SYMBOL,) and edge.renamed:
+                    violations.append(
+                        _channel_rounding_import_failure(
+                            "Pixelize must import round_channel_half_away_from_zero "
+                            "from the Scale facade under its canonical name so the "
+                            "approved edge remains directly auditable.",
+                            edge,
+                        )
+                    )
+                if edge.names == (CHANNEL_ROUNDING_SYMBOL,) and edge.hidden:
+                    violations.append(
+                        _channel_rounding_import_failure(
+                            "The approved Pixelize-to-Scale dependency must remain a "
+                            "top-level static import; hidden or TYPE_CHECKING imports "
+                            "conceal the architecture edge.",
+                            edge,
+                        )
+                    )
+            if target.startswith("pixipix.stages.scale."):
+                violations.append(
+                    _channel_rounding_import_failure(
+                        "Pixelize may depend on the Scale compatibility facade, not "
+                        "Scale's internal modules such as geometry.",
+                        edge,
+                    )
+                )
             if (
                 target.startswith("pixipix")
                 and target not in PIXELIZE_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
@@ -1423,11 +1624,357 @@ def test_pixelize_dependency_rule_rejects_module_root_and_scale_bypasses() -> No
         assert violations, f"pixelize dependency bypass was accepted: {source}"
 
 
+def test_channel_rounding_ownership_contract_is_exact() -> None:
+    calls: list[tuple[str, str | None, int]] = []
+    trees: dict[str, ast.Module] = {}
+    for path in _production_files():
+        module = _module(path)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        trees[module] = tree
+        calls.extend(_channel_rounding_calls(module, tree))
+
+    definitions = _channel_rounding_definitions(trees)
+    assert len(definitions) == 1, (
+        "Channel-rounding ownership changed. ADR-004 requires exactly one "
+        f"{CHANNEL_ROUNDING_SYMBOL} implementation; found "
+        f"{[(module, node.lineno) for module, node in definitions]}"
+    )
+    owner, definition = definitions[0]
+    assert owner == CHANNEL_ROUNDING_OWNER, (
+        "Channel-rounding ownership changed. ADR-004 requires one implementation "
+        f"owned by {CHANNEL_ROUNDING_OWNER}; found {owner}"
+    )
+
+    expected_definition = ast.parse(CHANNEL_ROUNDING_FUNCTION_SOURCE).body[0]
+    assert isinstance(expected_definition, ast.FunctionDef)
+    assert _channel_rounding_definition_contract(
+        definition
+    ) == _channel_rounding_definition_contract(expected_definition), (
+        "Channel-rounding semantic scope changed. ADR-004 requires finite float "
+        "quantization with half-away rounding and [0,255] clamping; reopen ADR-004 "
+        "before accepting a semantic expansion."
+    )
+
+    exact_body_duplicates = _channel_rounding_exact_body_duplicates(
+        trees,
+        definition,
+    )
+    assert not exact_body_duplicates, (
+        "Duplicate channel-rounding implementation detected. ADR-004 requires one "
+        f"Scale-owned implementation; found exact-body duplicates {exact_body_duplicates}"
+    )
+
+    _assert_channel_rounding_call_contract(calls)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_count"),
+    [
+        (
+            "def round_channel_half_away_from_zero(value):\n    return value",
+            1,
+        ),
+        (
+            "def outer():\n    def round_channel_half_away_from_zero(value):\n        return value",
+            1,
+        ),
+        (
+            "class Quantizer:\n"
+            "    def round_channel_half_away_from_zero(self, value):\n"
+            "        return value",
+            1,
+        ),
+        (
+            "async def round_channel_half_away_from_zero(value):\n    return value",
+            1,
+        ),
+        ("round_channel_half_away_from_zero = lambda value: value", 0),
+        ("round_channel_half_away_from_zero = another_binding", 0),
+        (
+            "from owner import helper as round_channel_half_away_from_zero",
+            0,
+        ),
+    ],
+)
+def test_channel_rounding_definition_inventory_distinguishes_implementations(
+    source: str,
+    expected_count: int,
+) -> None:
+    definitions = _channel_rounding_definitions({"pixipix.stages.fixture": ast.parse(source)})
+    assert len(definitions) == expected_count
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_duplicate"),
+    [
+        (
+            CHANNEL_ROUNDING_FUNCTION_SOURCE.replace(
+                "round_channel_half_away_from_zero",
+                "copied_rounding",
+                1,
+            ),
+            True,
+        ),
+        (
+            CHANNEL_ROUNDING_FUNCTION_SOURCE.replace(
+                "def round_channel_half_away_from_zero(value: float) -> int:\n",
+                'def copied_rounding(value: float) -> int:\n    """Different documentation."""\n',
+            ),
+            True,
+        ),
+        (
+            "\n"
+            + CHANNEL_ROUNDING_FUNCTION_SOURCE.replace(
+                "round_channel_half_away_from_zero",
+                "copied_rounding",
+                1,
+            ).replace("value: float", "value : float")
+            + "\n",
+            True,
+        ),
+        (
+            "def copied_rounding(value: float) -> int:\n"
+            "    if not math.isfinite(value):\n"
+            '        raise ValueError("channel value must be finite")\n'
+            "    magnitude = math.floor(abs(value) + 0.5)\n"
+            "    rounded = -magnitude if value < 0 else magnitude\n"
+            "    return max(0, min(255, rounded))",
+            False,
+        ),
+        (
+            "def clamp_index(value: float) -> int:\n    return max(0, min(255, int(value)))",
+            False,
+        ),
+        (
+            "def outer():\n"
+            "    def copied_rounding(value: float) -> int:\n"
+            "        if not math.isfinite(value):\n"
+            '            raise ValueError("channel value must be finite")\n'
+            "        magnitude = math.floor(abs(value) + 0.5)\n"
+            "        rounded = magnitude if value >= 0 else -magnitude\n"
+            "        return min(255, max(0, rounded))",
+            True,
+        ),
+    ],
+)
+def test_channel_rounding_duplicate_inventory_has_exact_body_scope(
+    source: str,
+    expected_duplicate: bool,
+) -> None:
+    owner_tree = ast.parse(CHANNEL_ROUNDING_FUNCTION_SOURCE)
+    owner = owner_tree.body[0]
+    assert isinstance(owner, ast.FunctionDef)
+    duplicates = _channel_rounding_exact_body_duplicates(
+        {
+            CHANNEL_ROUNDING_OWNER: owner_tree,
+            "pixipix.stages.fixture": ast.parse(source),
+        },
+        owner,
+    )
+    assert bool(duplicates) is expected_duplicate
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "pixipix.stages.scale",
+        "pixipix.stages.scale.api",
+        "pixipix.stages.scale.execution",
+        "pixipix.stages.scale.geometry",
+        "pixipix.stages.scale.metadata",
+        "pixipix.stages.scale.planning",
+        "pixipix.stages.scale.future_sibling",
+    ],
+)
+def test_channel_rounding_call_inventory_scans_every_scale_module(
+    module: str,
+) -> None:
+    calls = _channel_rounding_calls(
+        module,
+        ast.parse(
+            "def outer():\n    def nested():\n        round_channel_half_away_from_zero(1.0)"
+        ),
+    )
+    assert calls == [(module, "nested", 3)]
+
+
+@pytest.mark.parametrize(
+    ("non_scale_calls", "expected_message"),
+    [
+        ([], "approved non-Scale production call"),
+        (
+            [
+                (
+                    CHANNEL_ROUNDING_CONSUMER,
+                    CHANNEL_ROUNDING_CALL_SITE,
+                    10,
+                ),
+                (
+                    CHANNEL_ROUNDING_CONSUMER,
+                    CHANNEL_ROUNDING_CALL_SITE,
+                    11,
+                ),
+            ],
+            "new production call site",
+        ),
+        (
+            [(CHANNEL_ROUNDING_CONSUMER, "other_function", 10)],
+            "call-site owner changed",
+        ),
+        (
+            [("pixipix.stages.pixelize.planning", "other_function", 10)],
+            "new production consumer",
+        ),
+        (
+            [(CHANNEL_ROUNDING_CONSUMER, "_weighted_alpha_majority", 10)],
+            "call-site owner changed",
+        ),
+    ],
+)
+def test_channel_rounding_call_contract_failures_are_specific(
+    non_scale_calls: list[tuple[str, str | None, int]],
+    expected_message: str,
+) -> None:
+    scale_calls = [
+        (
+            "pixipix.stages.scale.execution",
+            "premultiplied_box_resize",
+            1,
+        ),
+        (
+            "pixipix.stages.scale.execution",
+            "premultiplied_box_resize",
+            2,
+        ),
+    ]
+    with pytest.raises(AssertionError, match=expected_message):
+        _assert_channel_rounding_call_contract([*scale_calls, *non_scale_calls])
+
+
+def test_channel_rounding_import_contract_accepts_canonical_facade_symbol() -> None:
+    modules = {"pixipix", *PIXELIZE_MODULES, *SCALE_MODULES}
+    edges = _collect_source(
+        CHANNEL_ROUNDING_CONSUMER,
+        "pixipix.stages.pixelize",
+        "from pixipix.stages.scale import round_channel_half_away_from_zero",
+    )
+    violations, _symbols, _root_imports = _pixelize_dependency_violations(
+        edges,
+        modules,
+    )
+    assert not violations, "\n".join(violations)
+    assert len(edges) == 1
+    edge = edges[0]
+    assert (
+        edge.imported,
+        edge.names,
+        edge.renamed,
+        edge.hidden,
+        edge.hard,
+    ) == (
+        "pixipix.stages.scale",
+        (CHANNEL_ROUNDING_SYMBOL,),
+        False,
+        False,
+        True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_message"),
+    [
+        (
+            "from pixipix.stages.scale import round_channel_half_away_from_zero as round_channel",
+            "under its canonical name",
+        ),
+        (
+            "from pixipix.stages.scale.geometry import round_channel_half_away_from_zero",
+            "not Scale's internal modules",
+        ),
+        (
+            "from pixipix.stages.scale.geometry import "
+            "round_channel_half_away_from_zero as round_channel",
+            "not Scale's internal modules",
+        ),
+        (
+            "import pixipix.stages.scale",
+            "may not import the whole Scale module",
+        ),
+        (
+            "import pixipix.stages.scale as scale",
+            "may not import the whole Scale module",
+        ),
+        (
+            "from pixipix.stages import scale",
+            "package-root Scale access",
+        ),
+        (
+            "from pixipix.stages.scale import *",
+            "may not use a wildcard Scale import",
+        ),
+        (
+            "def hidden():\n    from pixipix.stages.scale import round_channel_half_away_from_zero",
+            "top-level static import",
+        ),
+        (
+            "def outer():\n"
+            "    def inner():\n"
+            "        from pixipix.stages.scale import "
+            "round_channel_half_away_from_zero",
+            "top-level static import",
+        ),
+        (
+            "if condition:\n    from pixipix.stages.scale import round_channel_half_away_from_zero",
+            "top-level static import",
+        ),
+        (
+            "try:\n"
+            "    from pixipix.stages.scale import "
+            "round_channel_half_away_from_zero\n"
+            "except ImportError:\n"
+            "    pass",
+            "top-level static import",
+        ),
+        (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from pixipix.stages.scale import "
+            "round_channel_half_away_from_zero",
+            "top-level static import",
+        ),
+        (
+            "from typing import TYPE_CHECKING as TC\n"
+            "if TC:\n"
+            "    from pixipix.stages.scale import "
+            "round_channel_half_away_from_zero",
+            "top-level static import",
+        ),
+    ],
+)
+def test_channel_rounding_import_contract_rejects_static_bypasses(
+    source: str,
+    expected_message: str,
+) -> None:
+    modules = {"pixipix", *PIXELIZE_MODULES, *SCALE_MODULES}
+    violations, _symbols, _root_imports = _pixelize_dependency_violations(
+        _collect_source(
+            CHANNEL_ROUNDING_CONSUMER,
+            "pixipix.stages.pixelize",
+            source,
+        ),
+        modules,
+    )
+    assert any(expected_message in violation for violation in violations), (
+        "channel-rounding import bypass did not fail for the intended reason: "
+        f"source={source!r}, violations={violations}"
+    )
+
+
 def test_pixelize_dependency_rule_rejects_dynamic_imports() -> None:
     cases = (
         "__import__('pixipix.stages.scale')",
-        "load = __import__\nload('pixipix.stages.scale')",
-        "import importlib\nimportlib.import_module('pixipix.stages.scale')",
+        "alias = __import__\nalias('pixipix.stages.scale')",
+        "import importlib as il\nil.import_module('pixipix.stages.scale')",
         "from importlib import import_module as load\nload('pixipix.stages.scale')",
     )
     for source in cases:
