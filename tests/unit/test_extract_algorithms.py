@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from itertools import permutations
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -9,7 +11,7 @@ import pytest
 import pixipix.stages.extract as extract_stage
 from pixipix.config import ExtractConfig, load_config
 from pixipix.errors import ProcessingError
-from pixipix.models import Component, Rect
+from pixipix.models import Component, ExtractedFrame, Rect
 from pixipix.resources import ResourceProjection
 from pixipix.stages.extract import (
     filter_components,
@@ -21,12 +23,22 @@ from pixipix.stages.extract import (
 from tests.helpers import extraction_config, write_config, write_rgba
 
 
+class _ExtractNumpyProxy:
+    def __init__(self, zeros: Callable[..., object]) -> None:
+        self.zeros = zeros
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(np, name)
+
+
 def test_four_and_eight_connectivity() -> None:
     mask = np.array([[True, False], [False, True]], dtype=np.bool_)
 
     four = label_components(mask, 4, 8)
     eight = label_components(mask, 8, 8)
 
+    assert type(four) is extract_stage.ComponentMap
+    assert type(eight) is extract_stage.ComponentMap
     assert [component.area for component in four.components] == [1, 1]
     assert [component.discovery_index for component in four.components] == [0, 1]
     assert [component.bounds for component in four.components] == [
@@ -36,6 +48,89 @@ def test_four_and_eight_connectivity() -> None:
     assert len(eight.components) == 1
     assert eight.components[0].area == 2
     assert eight.components[0].bounds == Rect(0, 0, 2, 2)
+
+
+def test_labeling_uses_extract_package_numpy_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mask = np.ones((1, 1), dtype=np.bool_)
+    global_zeros = np.zeros
+
+    class ExtractZerosReached(Exception):
+        pass
+
+    def mark_zeros(*_args: object, **_kwargs: object) -> None:
+        raise ExtractZerosReached("extract package np.zeros reached")
+
+    proxy = _ExtractNumpyProxy(mark_zeros)
+    assert proxy.int32 is np.int32
+    assert proxy.array is np.array
+    assert proxy.uint8 is np.uint8
+    monkeypatch.setattr(extract_stage, "np", proxy)
+
+    with pytest.raises(
+        ExtractZerosReached,
+        match=r"extract package np\.zeros reached",
+    ) as raised:
+        label_components(mask, 4, 1)
+
+    traceback_names = tuple(entry.name for entry in raised.traceback)
+    assert "label_components" in traceback_names
+    assert traceback_names[-1] == "mark_zeros"
+    assert np.zeros is global_zeros
+
+
+def test_staged_png_validation_uses_extract_package_pillow_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "candidate.png"
+    candidate.write_bytes(b"not decoded because the package binding raises")
+
+    class ExtractImageOpenReached(Exception):
+        pass
+
+    def mark_open(_path: Path) -> None:
+        raise ExtractImageOpenReached("extract package Image.open reached")
+
+    monkeypatch.setattr(extract_stage, "Image", SimpleNamespace(open=mark_open))
+
+    with pytest.raises(
+        ExtractImageOpenReached,
+        match=r"extract package Image\.open reached",
+    ) as raised:
+        extract_stage._valid_frame_png(candidate)
+
+    traceback_names = tuple(entry.name for entry in raised.traceback)
+    assert "_valid_frame_png" in traceback_names
+    assert traceback_names[-1] == "mark_open"
+
+
+def test_analysis_uses_extract_package_source_decoder_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "project.toml"
+    write_config(config)
+    loaded = load_config(config)
+
+    class ExtractSourceDecoderReached(Exception):
+        pass
+
+    def mark_load_source(_path: Path, _config: object) -> None:
+        raise ExtractSourceDecoderReached("extract package load_source reached")
+
+    monkeypatch.setattr(extract_stage, "load_source", mark_load_source)
+
+    with pytest.raises(
+        ExtractSourceDecoderReached,
+        match="extract package load_source reached",
+    ) as raised:
+        extract_stage.inspect_source(tmp_path / "source.png", loaded)
+
+    traceback_names = tuple(entry.name for entry in raised.traceback)
+    assert "_analyze" in traceback_names
+    assert traceback_names[-1] == "mark_load_source"
 
 
 def test_row_major_discovery_and_exact_area_bounds() -> None:
@@ -167,6 +262,8 @@ def test_projected_extract_bounds_and_formula_inputs_stay_synchronized_without_c
     analysis = extract_stage._analyze(image, loaded)
     crop_calls = 0
 
+    assert type(analysis) is extract_stage._Analysis
+
     def record_crop(*_args: object) -> None:
         nonlocal crop_calls
         crop_calls += 1
@@ -174,6 +271,7 @@ def test_projected_extract_bounds_and_formula_inputs_stay_synchronized_without_c
     monkeypatch.setattr(extract_stage, "_materialize_frame_crop", record_crop)
     frames = project_extracted_frames(analysis, loaded)
 
+    assert all(type(frame) is ExtractedFrame for frame in frames)
     assert tuple(frame.original_bounds for frame in frames) == (
         Rect(0, 0, 1, 2),
         Rect(5, 3, 7, 5),
@@ -193,13 +291,50 @@ def test_projected_extract_bounds_and_formula_inputs_stay_synchronized_without_c
     )
     frame_areas = tuple(frame.padded_bounds.width * frame.padded_bounds.height for frame in frames)
     assert (10 * 12, sum(frame_areas), max(frame_areas)) == (120, 64, 36)
-    assert project_extract_resources(120, frames) == ResourceProjection(
+    projection = project_extract_resources(120, frames)
+    assert type(projection) is ResourceProjection
+    assert projection == ResourceProjection(
         "extract",
         120,
         64,
         1_372,
     )
     assert crop_calls == 0
+
+
+def test_frame_projection_uses_extract_package_bounds_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pixels = np.zeros((3, 3, 4), dtype=np.uint8)
+    pixels[1, 1] = (10, 20, 30, 255)
+    image = tmp_path / "source.png"
+    config = tmp_path / "project.toml"
+    write_rgba(image, pixels)
+    write_config(
+        config,
+        extraction_config(names=("only",), minimum_area=1, padding=1, expected=1),
+    )
+    loaded = load_config(config)
+    analysis = extract_stage._analyze(image, loaded)
+
+    class ExtractBoundsReached(Exception):
+        pass
+
+    def mark_bounds(_bounds: Rect, _padding: int, _width: int, _height: int) -> None:
+        raise ExtractBoundsReached("extract package _padded_bounds reached")
+
+    monkeypatch.setattr(extract_stage, "_padded_bounds", mark_bounds)
+
+    with pytest.raises(
+        ExtractBoundsReached,
+        match="extract package _padded_bounds reached",
+    ) as raised:
+        project_extracted_frames(analysis, loaded)
+
+    traceback_names = tuple(entry.name for entry in raised.traceback)
+    assert "project_extracted_frames" in traceback_names
+    assert traceback_names[-1] == "mark_bounds"
 
 
 def test_reading_order_is_permutation_independent_and_does_not_chain_rows() -> None:

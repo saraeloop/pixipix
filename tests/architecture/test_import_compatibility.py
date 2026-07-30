@@ -71,6 +71,24 @@ def _symbol(
 MATRIX = (
     _symbol(
         "pixipix.stages.extract",
+        "ComponentMap",
+        ("tests",),
+        "private-but-consumed",
+        "class",
+        "(components: 'tuple[Component, ...]', labels: 'LabelMap') -> None",
+    ),
+    _symbol(
+        "pixipix.stages.extract",
+        "_Analysis",
+        ("tests",),
+        "private-but-consumed",
+        "class",
+        "(source: 'SourceImage', mask: 'BoolMask', component_map: 'ComponentMap', "
+        "accepted: 'tuple[Component, ...]', rejected: 'tuple[RejectedComponent, ...]', "
+        "ordered: 'tuple[Component, ...]', background: 'BackgroundSummary') -> None",
+    ),
+    _symbol(
+        "pixipix.stages.extract",
         "inspect_source",
         ("production", "tests"),
         "internal",
@@ -158,6 +176,41 @@ MATRIX = (
         ("tests",),
         "private-but-consumed",
         signature="(output: 'Path') -> 'None'",
+    ),
+    _symbol(
+        "pixipix.stages.extract",
+        "extract_source",
+        ("tests",),
+        "internal",
+        signature="(input_path: 'Path', loaded: 'LoadedConfig') -> 'ExtractionRun'",
+    ),
+    _symbol(
+        "pixipix.stages.extract",
+        "_valid_frame_png",
+        ("monkeypatch",),
+        "monkeypatch-sensitive",
+        signature="(path: 'Path', expected_size: 'tuple[int, int] | None' = None) -> 'bool'",
+    ),
+    _symbol(
+        "pixipix.stages.extract",
+        "load_source",
+        ("monkeypatch",),
+        "monkeypatch-sensitive",
+        signature="(path: 'Path', config: 'SourceConfig') -> 'SourceImage'",
+    ),
+    _symbol(
+        "pixipix.stages.extract",
+        "Image",
+        ("monkeypatch",),
+        "monkeypatch-sensitive",
+        "value",
+    ),
+    _symbol(
+        "pixipix.stages.extract",
+        "np",
+        ("monkeypatch",),
+        "monkeypatch-sensitive",
+        "value",
     ),
     _symbol(
         "pixipix.stages.extract",
@@ -721,6 +774,9 @@ def test_monkeypatch_sensitive_bindings_resolve_at_current_paths() -> None:
         "pixipix.pipeline.input:Image.open",
         "pixipix.pipeline.publication:write_json",
         "pixipix.pipeline.publication:write_png",
+        "pixipix.stages.extract:Image.open",
+        "pixipix.stages.extract:np.zeros",
+        "pixipix.stages.extract:load_source",
         "pixipix.stages.extract:write_png",
         "pixipix.stages.extract:_materialize_frame_crop",
         "pixipix.stages.scale.api:decode_stage_input",
@@ -902,6 +958,108 @@ def test_installed_smoke_private_import_and_physical_member_are_explicit() -> No
 
 def test_matrix_does_not_promote_consumed_stage_symbols_to_public_api() -> None:
     assert all(entry.classification != "public" for entry in MATRIX)
+
+
+def test_extract_package_preserves_module_binding_and_type_identities() -> None:
+    package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "extract"
+    extract = importlib.import_module("pixipix.stages.extract")
+    imageio = importlib.import_module("pixipix.imageio")
+    models = importlib.import_module("pixipix.models")
+    resources = importlib.import_module("pixipix.resources")
+    pillow_image = importlib.import_module("PIL.Image")
+    numpy = importlib.import_module("numpy")
+    extract_file = extract.__file__
+
+    assert extract_file is not None
+    assert Path(extract_file).resolve() == (package / "__init__.py").resolve()
+    assert extract.__spec__ is not None
+    assert extract.__spec__.submodule_search_locations is not None
+    defined_names = (
+        "ComponentMap",
+        "_Analysis",
+        "label_components",
+        "filter_components",
+        "order_components",
+        "_analyze",
+        "inspect_source",
+        "_padded_bounds",
+        "project_extract_resources",
+        "project_extracted_frames",
+        "_materialize_frame_crop",
+        "extract_source",
+        "_stage_metadata",
+        "_valid_marker",
+        "_frame_path",
+        "_valid_frame_png",
+        "_validate_staged_payload",
+        "_validate_staged_output",
+        "_valid_owned_output",
+        "_is_trusted_system_tmp_alias",
+        "_validate_output_location",
+        "_prepare_target",
+        "_remove_temporary_tree",
+        "publish_extraction",
+    )
+    for name in defined_names:
+        assert vars(extract)[name].__module__ == "pixipix.stages.extract"
+    imported_owners = {
+        "ExtractedFrame": models,
+        "ExtractionResult": models,
+        "ExtractionRun": models,
+        "FrameImage": models,
+        "InspectionResult": models,
+        "ResourceProjection": resources,
+        "load_source": imageio,
+        "write_png": imageio,
+    }
+    for name, owner in imported_owners.items():
+        assert vars(extract)[name] is vars(owner)[name]
+    assert vars(extract)["Image"] is pillow_image
+    assert vars(extract)["np"] is numpy
+    assert vars(extract)["FOUR_NEIGHBORS"] == ((-1, 0), (0, -1), (0, 1), (1, 0))
+    assert vars(extract)["EIGHT_NEIGHBORS"] == (
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    )
+    assert sys.modules["pixipix.stages.extract"] is extract
+    assert "pixipix.stages.extract.__init__" not in sys.modules
+
+    code = (
+        "import pathlib, sys; "
+        "import pixipix.stages.extract as extract; "
+        "import pixipix.imageio as imageio; "
+        "import pixipix.models as models; "
+        "import pixipix.resources as resources; "
+        "assert pathlib.Path(extract.__file__).name == '__init__.py'; "
+        "assert extract.__spec__.submodule_search_locations is not None; "
+        "assert extract.ComponentMap.__module__ == 'pixipix.stages.extract'; "
+        "assert extract._Analysis.__module__ == 'pixipix.stages.extract'; "
+        "assert extract.inspect_source.__module__ == 'pixipix.stages.extract'; "
+        "assert extract.extract_source.__module__ == 'pixipix.stages.extract'; "
+        "assert extract.publish_extraction.__module__ == 'pixipix.stages.extract'; "
+        "assert extract.ExtractionRun is models.ExtractionRun; "
+        "assert extract.ExtractionResult is models.ExtractionResult; "
+        "assert extract.FrameImage is models.FrameImage; "
+        "assert extract.ResourceProjection is resources.ResourceProjection; "
+        "assert extract.load_source is imageio.load_source; "
+        "assert extract.write_png is imageio.write_png; "
+        "assert sys.modules['pixipix.stages.extract'] is extract; "
+        "assert 'pixipix.stages.extract.__init__' not in sys.modules"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_stage_plan_exports_are_the_exact_types_constructed_by_planners(
