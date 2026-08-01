@@ -175,7 +175,7 @@ EXTRACT_ALLOWED_EXTERNAL_IMPORTS = {
         "tempfile",
     },
 }
-EXTRACT_ALLOWED_ROOT_IMPORTS = {
+EXTRACT_ALLOWED_ROOT_IMPORTS: set[tuple[str, str, tuple[str, ...]]] = {
     (
         "pixipix.stages.extract.metadata",
         "pixipix",
@@ -189,15 +189,33 @@ ALIGN_MODULES = {
     "pixipix.stages.align.geometry",
     "pixipix.stages.align.planning",
 }
-ALIGN_ALLOWED_INTERNAL_EDGES = {
-    ("pixipix.stages.align", "pixipix.stages.align.api"),
-    ("pixipix.stages.align", "pixipix.stages.align.execution"),
-    ("pixipix.stages.align", "pixipix.stages.align.geometry"),
-    ("pixipix.stages.align", "pixipix.stages.align.planning"),
-    ("pixipix.stages.align.api", "pixipix.stages.align.execution"),
-    ("pixipix.stages.align.api", "pixipix.stages.align.planning"),
-    ("pixipix.stages.align.execution", "pixipix.stages.align.planning"),
-    ("pixipix.stages.align.planning", "pixipix.stages.align.geometry"),
+ALIGN_ALLOWED_INTERNAL_SYMBOLS = {
+    ("pixipix.stages.align", "pixipix.stages.align.api"): {"publish_align"},
+    ("pixipix.stages.align", "pixipix.stages.align.execution"): {
+        "AlignmentRun",
+        "align_stage",
+        "compose_aligned_canvas",
+    },
+    ("pixipix.stages.align", "pixipix.stages.align.geometry"): {
+        "EMPTY_RECTANGLE",
+        "calculate_alignment_frame",
+        "mathematical_floor_center",
+    },
+    ("pixipix.stages.align", "pixipix.stages.align.planning"): {
+        "AlignmentStagePlan",
+        "clipping_finding",
+        "project_align_resources",
+        "project_align_stage",
+    },
+    ("pixipix.stages.align.api", "pixipix.stages.align.execution"): {"align_stage"},
+    ("pixipix.stages.align.api", "pixipix.stages.align.planning"): {"project_align_stage"},
+    ("pixipix.stages.align.execution", "pixipix.stages.align.planning"): {
+        "AlignmentStagePlan",
+        "_require_output_config",
+    },
+    ("pixipix.stages.align.planning", "pixipix.stages.align.geometry"): {
+        "calculate_alignment_frame"
+    },
 }
 ALIGN_ALLOWED_PIXIPIX_DEPENDENCIES = {
     "pixipix.stages.align": {
@@ -243,6 +261,13 @@ ALIGN_ALLOWED_EXTERNAL_IMPORTS = {
     "pixipix.stages.align.geometry": {"__future__", "pathlib"},
     "pixipix.stages.align.planning": {"__future__", "dataclasses"},
 }
+ALIGN_ALLOWED_ROOT_IMPORTS: set[tuple[str, str, tuple[str, ...]]] = {
+    (
+        "pixipix.stages.align.execution",
+        "pixipix",
+        ("__version__",),
+    ),
+}
 ALIGN_ALLOWED_PIPELINE_SYMBOLS = {
     ("pixipix.stages.align.api", "pixipix.pipeline.input"): {
         "decode_stage_input",
@@ -260,6 +285,12 @@ ALIGN_ALLOWED_PIPELINE_SYMBOLS = {
     },
     ("pixipix.stages.align.planning", "pixipix.pipeline.input"): {
         "ValidatedStageInput",
+    },
+    ("pixipix.stages.align.api", "pixipix.resources"): {
+        "enforce_resource_policy",
+    },
+    ("pixipix.stages.align.planning", "pixipix.resources"): {
+        "ResourceProjection",
     },
 }
 SCALE_MODULES = {
@@ -363,7 +394,7 @@ SCALE_ALLOWED_EXTERNAL_IMPORTS = {
     "pixipix.stages.scale.metadata": {"__future__"},
     "pixipix.stages.scale.planning": {"__future__", "dataclasses"},
 }
-SCALE_ALLOWED_ROOT_IMPORTS = {
+SCALE_ALLOWED_ROOT_IMPORTS: set[tuple[str, str, tuple[str, ...]]] = {
     (
         "pixipix.stages.scale.metadata",
         "pixipix",
@@ -390,6 +421,12 @@ SCALE_ALLOWED_PIPELINE_SYMBOLS = {
     },
     ("pixipix.stages.scale.planning", "pixipix.pipeline.input"): {
         "ValidatedStageInput",
+    },
+    ("pixipix.stages.scale.api", "pixipix.resources"): {
+        "enforce_resource_policy",
+    },
+    ("pixipix.stages.scale.planning", "pixipix.resources"): {
+        "ResourceProjection",
     },
 }
 PIXELIZE_MODULES = {
@@ -486,7 +523,7 @@ PIXELIZE_ALLOWED_EXTERNAL_IMPORTS = {
     "pixipix.stages.pixelize.metadata": {"__future__"},
     "pixipix.stages.pixelize.planning": {"__future__", "dataclasses"},
 }
-PIXELIZE_ALLOWED_ROOT_IMPORTS = {
+PIXELIZE_ALLOWED_ROOT_IMPORTS: set[tuple[str, str, tuple[str, ...]]] = {
     (
         "pixipix.stages.pixelize.metadata",
         "pixipix",
@@ -514,6 +551,32 @@ PIXELIZE_ALLOWED_PIPELINE_SYMBOLS = {
     ("pixipix.stages.pixelize.planning", "pixipix.pipeline.input"): {
         "ValidatedStageInput",
     },
+    ("pixipix.stages.pixelize.api", "pixipix.resources"): {
+        "enforce_resource_policy",
+    },
+    ("pixipix.stages.pixelize.planning", "pixipix.resources"): {
+        "ResourceProjection",
+    },
+}
+PIPELINE_ALLOWED_INTERNAL_SYMBOLS = {
+    ("pixipix.pipeline.input", "pixipix.pipeline.artifacts"): {
+        "_dimensions",
+        "_is_output_marker",
+        "_is_schema_version_one",
+        "_positive_dimension",
+        "_read_json_object",
+        "_safe_frame_relative",
+        "_trusted_tmp_alias",
+    },
+    ("pixipix.pipeline.publication", "pixipix.pipeline.artifacts"): {
+        "StageName",
+        "_dimensions",
+        "_is_output_marker",
+        "_is_schema_version_one",
+        "_read_json_object",
+        "_safe_frame_relative",
+        "_trusted_tmp_alias",
+    },
 }
 CHANNEL_ROUNDING_SYMBOL = "round_channel_half_away_from_zero"
 CHANNEL_ROUNDING_OWNER = "pixipix.stages.scale.geometry"
@@ -538,6 +601,85 @@ class ImportEdge:
     hard: bool
     renamed: bool
     hidden: bool
+    type_only: bool
+
+
+@dataclass(frozen=True, slots=True)
+class StageDependencyContract:
+    name: str
+    modules: set[str]
+    allowed_internal_symbols: dict[tuple[str, str], set[str]]
+    allowed_pixipix_dependencies: dict[str, set[str]]
+    allowed_external_imports: dict[str, set[str]] | None
+    allowed_root_imports: set[tuple[str, str, tuple[str, ...]]]
+    allowed_shared_symbols: dict[tuple[str, str], set[str]]
+
+
+EXTRACT_DEPENDENCY_CONTRACT = StageDependencyContract(
+    name="extract",
+    modules=EXTRACT_MODULES,
+    allowed_internal_symbols=EXTRACT_ALLOWED_INTERNAL_SYMBOLS,
+    allowed_pixipix_dependencies=EXTRACT_ALLOWED_PIXIPIX_DEPENDENCIES,
+    allowed_external_imports=EXTRACT_ALLOWED_EXTERNAL_IMPORTS,
+    allowed_root_imports=EXTRACT_ALLOWED_ROOT_IMPORTS,
+    allowed_shared_symbols={},
+)
+ALIGN_DEPENDENCY_CONTRACT = StageDependencyContract(
+    name="align",
+    modules=ALIGN_MODULES,
+    allowed_internal_symbols=ALIGN_ALLOWED_INTERNAL_SYMBOLS,
+    allowed_pixipix_dependencies=ALIGN_ALLOWED_PIXIPIX_DEPENDENCIES,
+    allowed_external_imports=ALIGN_ALLOWED_EXTERNAL_IMPORTS,
+    allowed_root_imports=ALIGN_ALLOWED_ROOT_IMPORTS,
+    allowed_shared_symbols=ALIGN_ALLOWED_PIPELINE_SYMBOLS,
+)
+SCALE_DEPENDENCY_CONTRACT = StageDependencyContract(
+    name="scale",
+    modules=SCALE_MODULES,
+    allowed_internal_symbols=SCALE_ALLOWED_INTERNAL_SYMBOLS,
+    allowed_pixipix_dependencies=SCALE_ALLOWED_PIXIPIX_DEPENDENCIES,
+    allowed_external_imports=SCALE_ALLOWED_EXTERNAL_IMPORTS,
+    allowed_root_imports=SCALE_ALLOWED_ROOT_IMPORTS,
+    allowed_shared_symbols=SCALE_ALLOWED_PIPELINE_SYMBOLS,
+)
+PIXELIZE_DEPENDENCY_CONTRACT = StageDependencyContract(
+    name="pixelize",
+    modules=PIXELIZE_MODULES,
+    allowed_internal_symbols=PIXELIZE_ALLOWED_INTERNAL_SYMBOLS,
+    allowed_pixipix_dependencies=PIXELIZE_ALLOWED_PIXIPIX_DEPENDENCIES,
+    allowed_external_imports=PIXELIZE_ALLOWED_EXTERNAL_IMPORTS,
+    allowed_root_imports=PIXELIZE_ALLOWED_ROOT_IMPORTS,
+    allowed_shared_symbols=PIXELIZE_ALLOWED_PIPELINE_SYMBOLS,
+)
+PIPELINE_DEPENDENCY_CONTRACT = StageDependencyContract(
+    name="pipeline",
+    modules=PIPELINE_MODULES,
+    allowed_internal_symbols=PIPELINE_ALLOWED_INTERNAL_SYMBOLS,
+    allowed_pixipix_dependencies=PIPELINE_ALLOWED_PIXIPIX_DEPENDENCIES,
+    allowed_external_imports=None,
+    allowed_root_imports=set(),
+    allowed_shared_symbols={},
+)
+STAGE_DEPENDENCY_CONTRACTS = (
+    EXTRACT_DEPENDENCY_CONTRACT,
+    ALIGN_DEPENDENCY_CONTRACT,
+    SCALE_DEPENDENCY_CONTRACT,
+    PIXELIZE_DEPENDENCY_CONTRACT,
+)
+GOVERNED_PRODUCTION_MODULES = set().union(
+    PIPELINE_MODULES,
+    *(contract.modules for contract in STAGE_DEPENDENCY_CONTRACTS),
+)
+GOVERNED_DYNAMIC_TARGETS = set().union(
+    *(contract.modules for contract in STAGE_DEPENDENCY_CONTRACTS),
+    PIPELINE_MODULES,
+    {
+        target
+        for contract in STAGE_DEPENDENCY_CONTRACTS
+        for _importer, target in contract.allowed_shared_symbols
+    },
+    {"pixipix.stages"},
+)
 
 
 class _ImportCollector(ast.NodeVisitor):
@@ -548,6 +690,8 @@ class _ImportCollector(ast.NodeVisitor):
         self._scope_depth = 0
         self._type_checking_depth = 0
         self._hidden_depth = 0
+        self._type_checking_names: set[str] = set()
+        self._typing_module_names: set[str] = set()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._scope_depth += 1
@@ -569,7 +713,7 @@ class _ImportCollector(ast.NodeVisitor):
         self._hidden_depth -= 1
 
     def visit_If(self, node: ast.If) -> None:
-        is_type_checking = isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING"
+        is_type_checking = self._is_type_checking_test(node.test)
         if is_type_checking:
             self._type_checking_depth += 1
         self._hidden_depth += 1
@@ -582,6 +726,44 @@ class _ImportCollector(ast.NodeVisitor):
         for statement in node.orelse:
             self.visit(statement)
         self._hidden_depth -= 1
+
+    def _is_type_checking_test(self, node: ast.expr) -> bool:
+        direct_binding = (isinstance(node, ast.Name) and node.id in self._type_checking_names) or (
+            isinstance(node, ast.Attribute)
+            and node.attr == "TYPE_CHECKING"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in self._typing_module_names
+        )
+        return direct_binding or (
+            isinstance(node, ast.BoolOp)
+            and isinstance(node.op, ast.And)
+            and any(self._is_type_checking_test(value) for value in node.values)
+        )
+
+    def _type_binding_kind(self, node: ast.expr) -> str | None:
+        if isinstance(node, ast.Name):
+            if node.id in self._type_checking_names:
+                return "type_checking"
+            if node.id in self._typing_module_names:
+                return "typing_module"
+        return None
+
+    def _rebind_type_names(self, names: set[str], value: ast.expr | None) -> None:
+        binding_kind = self._type_binding_kind(value) if value is not None else None
+        self._type_checking_names.difference_update(names)
+        self._typing_module_names.difference_update(names)
+        if binding_kind == "type_checking":
+            self._type_checking_names.update(names)
+        elif binding_kind == "typing_module":
+            self._typing_module_names.update(names)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        names = {target.id for target in node.targets if isinstance(target, ast.Name)}
+        self._rebind_type_names(names, node.value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None and isinstance(node.target, ast.Name):
+            self._rebind_type_names({node.target.id}, node.value)
 
     def visit_Try(self, node: ast.Try) -> None:
         self._hidden_depth += 1
@@ -625,6 +807,10 @@ class _ImportCollector(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
+            binding_name = alias.asname or alias.name.partition(".")[0]
+            self._rebind_type_names({binding_name}, None)
+            if alias.name == "typing":
+                self._typing_module_names.add(binding_name)
             self.edges.append(
                 ImportEdge(
                     self.importer,
@@ -634,6 +820,7 @@ class _ImportCollector(ast.NodeVisitor):
                     self._scope_depth == 0 and self._type_checking_depth == 0,
                     alias.asname is not None and alias.asname != alias.name,
                     self._hidden_depth > 0,
+                    self._type_checking_depth > 0,
                 )
             )
 
@@ -644,6 +831,11 @@ class _ImportCollector(ast.NodeVisitor):
                 "." * node.level + imported,
                 self.package,
             )
+        for alias in node.names:
+            binding_name = alias.asname or alias.name
+            self._rebind_type_names({binding_name}, None)
+            if imported == "typing" and alias.name == "TYPE_CHECKING":
+                self._type_checking_names.add(binding_name)
         self.edges.append(
             ImportEdge(
                 self.importer,
@@ -655,6 +847,7 @@ class _ImportCollector(ast.NodeVisitor):
                     alias.asname is not None and alias.asname != alias.name for alias in node.names
                 ),
                 self._hidden_depth > 0,
+                self._type_checking_depth > 0,
             )
         )
 
@@ -663,37 +856,87 @@ class _DynamicImportCollector(ast.NodeVisitor):
     def __init__(self, importer: str) -> None:
         self.importer = importer
         self.import_names = {"__import__"}
-        self.violations: list[str] = []
+        self.importlib_names: set[str] = set()
+        self.calls: list[tuple[str, int]] = []
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            binding_name = alias.asname or alias.name.partition(".")[0]
+            self._rebind_import_names({binding_name}, None)
+            if alias.name == "importlib":
+                self.importlib_names.add(binding_name)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module == "importlib":
-            self.import_names.update(
-                alias.asname or alias.name for alias in node.names if alias.name == "import_module"
-            )
+        for alias in node.names:
+            binding_name = alias.asname or alias.name
+            self._rebind_import_names({binding_name}, None)
+            if node.module == "importlib" and alias.name == "import_module":
+                self.import_names.add(binding_name)
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        if isinstance(node.value, ast.Name) and node.value.id in self.import_names:
-            self.import_names.update(
-                target.id for target in node.targets if isinstance(target, ast.Name)
-            )
-        self.generic_visit(node)
+        names = {target.id for target in node.targets if isinstance(target, ast.Name)}
+        binding_kind = self._dynamic_binding_kind(node.value)
+        self.visit(node.value)
+        self._rebind_import_names(names, binding_kind)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.annotation)
+        if node.value is not None:
+            binding_kind = self._dynamic_binding_kind(node.value)
+            self.visit(node.value)
+            if isinstance(node.target, ast.Name):
+                self._rebind_import_names({node.target.id}, binding_kind)
 
     def visit_Call(self, node: ast.Call) -> None:
-        dynamic = (isinstance(node.func, ast.Name) and node.func.id in self.import_names) or (
-            isinstance(node.func, ast.Attribute) and node.func.attr == "import_module"
-        )
-        if dynamic:
-            self.violations.append(
-                f"dynamic import: {self.importer} calls a dynamic importer at production "
-                f"line {node.lineno}"
-            )
+        if (
+            self._is_dynamic_importer(node.func)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            self.calls.append((node.args[0].value, node.lineno))
         self.generic_visit(node)
 
+    def _is_dynamic_importer(self, node: ast.expr) -> bool:
+        return (isinstance(node, ast.Name) and node.id in self.import_names) or (
+            isinstance(node, ast.Attribute)
+            and node.attr == "import_module"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in self.importlib_names
+        )
 
-def _dynamic_import_violations(importer: str, tree: ast.AST) -> list[str]:
+    def _dynamic_binding_kind(self, node: ast.expr) -> str | None:
+        if self._is_dynamic_importer(node):
+            return "import_function"
+        if isinstance(node, ast.Name) and node.id in self.importlib_names:
+            return "importlib_module"
+        return None
+
+    def _rebind_import_names(self, names: set[str], binding_kind: str | None) -> None:
+        self.import_names.difference_update(names)
+        self.importlib_names.difference_update(names)
+        if binding_kind == "import_function":
+            self.import_names.update(names)
+        elif binding_kind == "importlib_module":
+            self.importlib_names.update(names)
+
+
+def _dynamic_import_violations(
+    importer: str,
+    tree: ast.AST,
+    governed_targets: set[str] | None = None,
+) -> list[str]:
     collector = _DynamicImportCollector(importer)
     collector.visit(tree)
-    return collector.violations
+    return [
+        f"{importer} dynamically imports {target}; governed architecture dependencies "
+        f"must be static and top-level (production line {line})"
+        for target, line in collector.calls
+        if governed_targets is None
+        or any(
+            target == governed or target.startswith(governed + ".") for governed in governed_targets
+        )
+    ]
 
 
 def _production_files() -> list[Path]:
@@ -977,7 +1220,8 @@ def _assert_channel_rounding_call_contract(
     )
 
 
-def _scale_dependency_violations(
+def _governed_dependency_violations(
+    contract: StageDependencyContract,
     edges: list[ImportEdge],
     modules: set[str],
 ) -> tuple[list[str], dict[tuple[str, str], set[str]], set[tuple[str, str, tuple[str, ...]]]]:
@@ -985,109 +1229,154 @@ def _scale_dependency_violations(
     internal_symbols: dict[tuple[str, str], set[str]] = {}
     root_imports: set[tuple[str, str, tuple[str, ...]]] = set()
     for edge in edges:
-        if edge.importer not in SCALE_MODULES:
+        if edge.importer not in contract.modules:
             continue
         if (
-            not edge.imported.startswith("pixipix")
-            and edge.imported not in SCALE_ALLOWED_EXTERNAL_IMPORTS[edge.importer]
+            contract.allowed_external_imports is not None
+            and not edge.imported.startswith("pixipix")
+            and edge.imported not in contract.allowed_external_imports[edge.importer]
         ):
-            violations.append(_failure("scale external capability", edge))
+            violations.append(_failure(f"{contract.name} external capability", edge))
         if edge.imported == "pixipix":
             root_import = (edge.importer, edge.imported, edge.names)
             root_imports.add(root_import)
-            if root_import not in SCALE_ALLOWED_ROOT_IMPORTS:
-                violations.append(_failure("scale package-root capability", edge))
-        if edge.imported.startswith("pixipix.pipeline.") and (
-            set(edge.names)
-            - SCALE_ALLOWED_PIPELINE_SYMBOLS.get((edge.importer, edge.imported), set())
-        ):
-            violations.append(_failure("scale shared pipeline capability", edge))
+            if root_import not in contract.allowed_root_imports:
+                violations.append(_failure(f"{contract.name} package-root capability", edge))
         for target in _target_modules(edge, modules):
-            if target in SCALE_MODULES:
+            key = (edge.importer, target)
+            allowed_symbols = contract.allowed_internal_symbols.get(key)
+            if target in contract.modules:
                 key = (edge.importer, target)
                 internal_symbols.setdefault(key, set()).update(edge.names)
-                allowed_symbols = SCALE_ALLOWED_INTERNAL_SYMBOLS.get(key)
-                if allowed_symbols is None or not edge.names or set(edge.names) - allowed_symbols:
-                    violations.append(_failure("scale internal dependency direction", edge))
+            if allowed_symbols is None:
+                allowed_symbols = contract.allowed_shared_symbols.get(key)
+            if allowed_symbols is not None:
+                violations.extend(
+                    _governed_import_form_violations(contract.name, edge, target, allowed_symbols)
+                )
+            elif target in contract.modules:
+                violations.append(_failure(f"{contract.name} internal dependency direction", edge))
             if (
                 target.startswith("pixipix")
-                and target not in SCALE_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
+                and target not in contract.allowed_pixipix_dependencies[edge.importer]
             ):
-                violations.append(_failure("scale layer capability", edge))
+                violations.append(_failure(f"{contract.name} layer capability", edge))
     return violations, internal_symbols, root_imports
+
+
+def _governed_import_form_violations(
+    contract_name: str,
+    edge: ImportEdge,
+    target: str,
+    allowed_symbols: set[str],
+) -> list[str]:
+    violations: list[str] = []
+    if edge.imported != target:
+        violations.append(
+            f"{contract_name} governed dependency: {edge.importer} must import approved "
+            f"symbols directly from {target}; package-root access conceals the exact capability"
+        )
+    if not edge.names:
+        violations.append(
+            f"{contract_name} governed dependency: {edge.importer} may import only approved "
+            f"symbols from {target}, not the whole module"
+        )
+    elif "*" in edge.names or set(edge.names) - allowed_symbols:
+        violations.append(
+            _failure(f"{contract_name} exact governed-symbol capability for {target}", edge)
+        )
+    if edge.renamed:
+        violations.append(
+            f"{contract_name} governed dependency: {edge.importer} must import governed "
+            f"symbols from {target} under their canonical names so the architecture edge "
+            "remains directly auditable"
+        )
+    if edge.hidden:
+        placement = "type-only" if edge.type_only else "runtime-hidden"
+        violations.append(
+            f"{contract_name} governed dependency: {edge.importer} must keep the governed "
+            f"dependency on {target} as a top-level static import; {placement} placement "
+            "conceals the architecture edge"
+        )
+    return violations
+
+
+def _governed_capability_exactness_violations(
+    contract: StageDependencyContract,
+    edges: list[ImportEdge],
+    modules: set[str],
+) -> list[str]:
+    declared = {
+        key: set(symbols)
+        for key, symbols in (
+            *contract.allowed_internal_symbols.items(),
+            *contract.allowed_shared_symbols.items(),
+        )
+    }
+    live: dict[tuple[str, str], set[str]] = {}
+    for edge in edges:
+        if edge.importer not in contract.modules:
+            continue
+        for target in _target_modules(edge, modules):
+            key = (edge.importer, target)
+            if target in contract.modules or key in declared:
+                live.setdefault(key, set()).update(edge.names)
+
+    violations: list[str] = []
+    for key in sorted(set(declared) | set(live)):
+        importer, target = key
+        permitted = declared.get(key, set())
+        imported = live.get(key, set())
+        for symbol in sorted(imported - permitted):
+            violations.append(
+                f"{contract.name} capability exactness: {importer} imports {symbol} from "
+                f"{target}, but the governed contract does not permit it"
+            )
+        for symbol in sorted(permitted - imported):
+            violations.append(
+                f"{contract.name} capability exactness: {importer} permits {symbol} from "
+                f"{target}, but no production governed import or documented compatibility "
+                "allowance uses it. Remove the unused permission or document the exception"
+            )
+    return violations
+
+
+def _scale_dependency_violations(
+    edges: list[ImportEdge],
+    modules: set[str],
+) -> tuple[list[str], dict[tuple[str, str], set[str]], set[tuple[str, str, tuple[str, ...]]]]:
+    return _governed_dependency_violations(SCALE_DEPENDENCY_CONTRACT, edges, modules)
 
 
 def _extract_dependency_violations(
     edges: list[ImportEdge],
     modules: set[str],
 ) -> tuple[list[str], dict[tuple[str, str], set[str]], set[tuple[str, str, tuple[str, ...]]]]:
-    violations: list[str] = []
-    internal_symbols: dict[tuple[str, str], set[str]] = {}
-    root_imports: set[tuple[str, str, tuple[str, ...]]] = set()
+    result = _governed_dependency_violations(EXTRACT_DEPENDENCY_CONTRACT, edges, modules)
+    violations, _internal_symbols, _root_imports = result
     for edge in edges:
-        if edge.importer not in EXTRACT_MODULES:
+        if edge.importer != "pixipix.stages.extract.api":
             continue
-        if (
-            not edge.imported.startswith("pixipix")
-            and edge.imported not in EXTRACT_ALLOWED_EXTERNAL_IMPORTS[edge.importer]
-        ):
-            violations.append(_failure("extract external capability", edge))
-        if edge.imported == "pixipix":
-            root_import = (edge.importer, edge.imported, edge.names)
-            root_imports.add(root_import)
-            if root_import not in EXTRACT_ALLOWED_ROOT_IMPORTS:
-                violations.append(_failure("extract package-root capability", edge))
         for target in _target_modules(edge, modules):
-            if target in EXTRACT_MODULES:
-                key = (edge.importer, target)
-                internal_symbols.setdefault(key, set()).update(edge.names)
-                allowed_symbols = EXTRACT_ALLOWED_INTERNAL_SYMBOLS.get(key)
-                if edge.renamed:
-                    violations.append(_failure("extract internal import alias", edge))
-                if edge.hidden:
-                    violations.append(_failure("extract hidden internal import", edge))
-                if allowed_symbols is None or not edge.names or set(edge.names) - allowed_symbols:
-                    violations.append(_failure("extract internal dependency direction", edge))
-            if (
-                target.startswith("pixipix")
-                and target not in EXTRACT_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
-            ):
-                violations.append(_failure("extract layer capability", edge))
-    return violations, internal_symbols, root_imports
+            if target == "pixipix.stages.extract.publication":
+                violations.append(
+                    "Extract API must not depend on publication; the approved exception is "
+                    "one-way publication → API via extract_source. "
+                    + _failure("extract reverse dependency", edge)
+                )
+    return result
 
 
 def _pixelize_dependency_violations(
     edges: list[ImportEdge],
     modules: set[str],
 ) -> tuple[list[str], dict[tuple[str, str], set[str]], set[tuple[str, str, tuple[str, ...]]]]:
-    violations: list[str] = []
-    internal_symbols: dict[tuple[str, str], set[str]] = {}
-    root_imports: set[tuple[str, str, tuple[str, ...]]] = set()
+    result = _governed_dependency_violations(PIXELIZE_DEPENDENCY_CONTRACT, edges, modules)
+    violations, _internal_symbols, _root_imports = result
     for edge in edges:
         if edge.importer not in PIXELIZE_MODULES:
             continue
-        if (
-            not edge.imported.startswith("pixipix")
-            and edge.imported not in PIXELIZE_ALLOWED_EXTERNAL_IMPORTS[edge.importer]
-        ):
-            violations.append(_failure("pixelize external capability", edge))
-        if edge.imported == "pixipix":
-            root_import = (edge.importer, edge.imported, edge.names)
-            root_imports.add(root_import)
-            if root_import not in PIXELIZE_ALLOWED_ROOT_IMPORTS:
-                violations.append(_failure("pixelize package-root capability", edge))
-        if edge.imported.startswith("pixipix.pipeline.") and (
-            set(edge.names)
-            - PIXELIZE_ALLOWED_PIPELINE_SYMBOLS.get((edge.importer, edge.imported), set())
-        ):
-            violations.append(_failure("pixelize shared pipeline capability", edge))
         for target in _target_modules(edge, modules):
-            if target in PIXELIZE_MODULES:
-                key = (edge.importer, target)
-                internal_symbols.setdefault(key, set()).update(edge.names)
-                allowed_symbols = PIXELIZE_ALLOWED_INTERNAL_SYMBOLS.get(key)
-                if allowed_symbols is None or not edge.names or set(edge.names) - allowed_symbols:
-                    violations.append(_failure("pixelize internal dependency direction", edge))
             if target == "pixipix.stages.scale":
                 if edge.names != (CHANNEL_ROUNDING_SYMBOL,):
                     if edge.imported == "pixipix.stages" and edge.names == ("scale",):
@@ -1143,12 +1432,21 @@ def _pixelize_dependency_violations(
                         edge,
                     )
                 )
-            if (
-                target.startswith("pixipix")
-                and target not in PIXELIZE_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
-            ):
-                violations.append(_failure("pixelize layer capability", edge))
-    return violations, internal_symbols, root_imports
+    return result
+
+
+def _align_dependency_violations(
+    edges: list[ImportEdge],
+    modules: set[str],
+) -> tuple[list[str], dict[tuple[str, str], set[str]], set[tuple[str, str, tuple[str, ...]]]]:
+    return _governed_dependency_violations(ALIGN_DEPENDENCY_CONTRACT, edges, modules)
+
+
+def _pipeline_dependency_violations(
+    edges: list[ImportEdge],
+    modules: set[str],
+) -> tuple[list[str], dict[tuple[str, str], set[str]], set[tuple[str, str, tuple[str, ...]]]]:
+    return _governed_dependency_violations(PIPELINE_DEPENDENCY_CONTRACT, edges, modules)
 
 
 def test_only_cli_imports_stage_command_publishers() -> None:
@@ -1243,17 +1541,86 @@ def test_pipeline_module_set_and_dependency_direction_are_exact() -> None:
         f"unexpected={sorted(actual_modules - PIPELINE_MODULES)}"
     )
 
-    violations: list[str] = []
-    for edge in _edges():
-        if edge.importer not in PIPELINE_MODULES:
-            continue
-        for target in _target_modules(edge, modules):
-            if (
-                target.startswith("pixipix")
-                and target not in PIPELINE_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
-            ):
-                violations.append(_failure("pipeline dependency direction", edge))
+    violations, internal_symbols, root_imports = _pipeline_dependency_violations(
+        _edges(),
+        modules,
+    )
     assert not violations, "\n".join(violations)
+    assert not root_imports
+    assert internal_symbols == PIPELINE_ALLOWED_INTERNAL_SYMBOLS, (
+        "pipeline internal dependency graph differs: "
+        f"missing={sorted(set(PIPELINE_ALLOWED_INTERNAL_SYMBOLS) - set(internal_symbols))}, "
+        f"unexpected={sorted(set(internal_symbols) - set(PIPELINE_ALLOWED_INTERNAL_SYMBOLS))}, "
+        f"symbols={internal_symbols}"
+    )
+
+
+def test_governed_modules_do_not_dynamically_import_architecture_capabilities() -> None:
+    violations: list[str] = []
+    for path in _production_files():
+        importer = _module(path)
+        if importer in GOVERNED_PRODUCTION_MODULES:
+            violations.extend(
+                _dynamic_import_violations(
+                    importer,
+                    ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
+                    GOVERNED_DYNAMIC_TARGETS,
+                )
+            )
+    assert not violations, "\n".join(violations)
+
+
+def test_governed_capability_maps_are_exact() -> None:
+    modules = {_module(path) for path in _production_files()}
+    edges = _edges()
+    violations = [
+        violation
+        for contract in (*STAGE_DEPENDENCY_CONTRACTS, PIPELINE_DEPENDENCY_CONTRACT)
+        for violation in _governed_capability_exactness_violations(contract, edges, modules)
+    ]
+    assert not violations, "\n".join(violations)
+
+
+def test_governed_capability_exactness_rejects_missing_and_unused_permissions() -> None:
+    modules = {_module(path) for path in _production_files()}
+    edges = _edges()
+    for contract in (*STAGE_DEPENDENCY_CONTRACTS, PIPELINE_DEPENDENCY_CONTRACT):
+        governed = {
+            **contract.allowed_internal_symbols,
+            **contract.allowed_shared_symbols,
+        }
+        key = sorted(governed)[0]
+        symbol = sorted(governed[key])[0]
+
+        governed[key].remove(symbol)
+        try:
+            missing_violations = _governed_capability_exactness_violations(
+                contract,
+                edges,
+                modules,
+            )
+        finally:
+            governed[key].add(symbol)
+        assert any(
+            f"imports {symbol} from {key[1]}" in violation and "does not permit it" in violation
+            for violation in missing_violations
+        ), f"{contract.name} accepted removal of live permission {key!r} {symbol!r}"
+
+        unused_symbol = "__slice_9_unused_capability"
+        governed[key].add(unused_symbol)
+        try:
+            unused_violations = _governed_capability_exactness_violations(
+                contract,
+                edges,
+                modules,
+            )
+        finally:
+            governed[key].remove(unused_symbol)
+        assert any(
+            f"permits {unused_symbol} from {key[1]}" in violation
+            and "no production governed import" in violation
+            for violation in unused_violations
+        ), f"{contract.name} accepted unused permission {key!r} {unused_symbol!r}"
 
 
 def test_stage_implementations_do_not_import_stages_io_facade() -> None:
@@ -1286,19 +1653,8 @@ def test_extract_internal_module_set_and_dependency_direction_are_exact() -> Non
         _edges(),
         modules,
     )
-    dynamic_imports: list[str] = []
-    for path in _production_files():
-        importer = _module(path)
-        if importer in EXTRACT_MODULES:
-            dynamic_imports.extend(
-                _dynamic_import_violations(
-                    importer,
-                    ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
-                )
-            )
 
     assert not violations, "\n".join(violations)
-    assert not dynamic_imports, "\n".join(dynamic_imports)
     assert root_imports == EXTRACT_ALLOWED_ROOT_IMPORTS
     assert internal_symbols == EXTRACT_ALLOWED_INTERNAL_SYMBOLS, (
         "extract internal dependency graph differs: "
@@ -1493,19 +1849,8 @@ def test_pixelize_internal_module_set_and_dependency_direction_are_exact() -> No
         _edges(),
         modules,
     )
-    dynamic_imports: list[str] = []
-    for path in _production_files():
-        importer = _module(path)
-        if importer in PIXELIZE_MODULES:
-            dynamic_imports.extend(
-                _dynamic_import_violations(
-                    importer,
-                    ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
-                )
-            )
 
     assert not violations, "\n".join(violations)
-    assert not dynamic_imports, "\n".join(dynamic_imports)
     assert root_imports == PIXELIZE_ALLOWED_ROOT_IMPORTS
     assert internal_symbols == PIXELIZE_ALLOWED_INTERNAL_SYMBOLS, (
         "pixelize internal dependency graph differs: "
@@ -1985,6 +2330,393 @@ def test_pixelize_dependency_rule_rejects_dynamic_imports() -> None:
         assert violations, f"pixelize dynamic import bypass was accepted: {source}"
 
 
+@pytest.mark.parametrize(
+    ("source", "dynamic", "approved"),
+    [
+        ("from .planning import project_align_stage", False, True),
+        ("import pixipix.stages.align.planning", False, False),
+        ("from .planning import *", False, False),
+        ("from .planning import project_align_stage as project", False, False),
+        ("def load():\n    from .planning import project_align_stage", False, False),
+        ("__import__('pixipix.stages.align.planning')", True, False),
+    ],
+)
+def test_align_generalized_governed_import_forms(
+    source: str,
+    dynamic: bool,
+    approved: bool,
+) -> None:
+    importer = "pixipix.stages.align.api"
+    if dynamic:
+        violations = _dynamic_import_violations(
+            importer,
+            ast.parse(source),
+            GOVERNED_DYNAMIC_TARGETS,
+        )
+    else:
+        violations, _symbols, _roots = _align_dependency_violations(
+            _collect_source(importer, "pixipix.stages.align", source),
+            {_module(path) for path in _production_files()},
+        )
+    assert bool(violations) is not approved
+
+
+@pytest.mark.parametrize(
+    ("source", "dynamic"),
+    [
+        ("from .planning import project_scale_stage as project", False),
+        ("if enabled:\n    from .planning import project_scale_stage", False),
+        ("import importlib as il\nil.import_module('pixipix.stages.scale.planning')", True),
+        ("__import__('pixipix.stages.scale')", True),
+    ],
+)
+def test_scale_generalized_governed_import_forms(source: str, dynamic: bool) -> None:
+    importer = "pixipix.stages.scale.api"
+    if dynamic:
+        violations = _dynamic_import_violations(
+            importer,
+            ast.parse(source),
+            GOVERNED_DYNAMIC_TARGETS,
+        )
+    else:
+        violations, _symbols, _roots = _scale_dependency_violations(
+            _collect_source(importer, "pixipix.stages.scale", source),
+            {_module(path) for path in _production_files()},
+        )
+    assert violations, f"Scale governed import bypass was accepted: {source}"
+
+
+@pytest.mark.parametrize(
+    ("source", "dynamic"),
+    [
+        ("from .planning import project_pixelize_stage as project", False),
+        (
+            "try:\n    from .planning import project_pixelize_stage\nexcept ImportError:\n    pass",
+            False,
+        ),
+        ("__import__('pixipix.stages.pixelize.planning')", True),
+    ],
+)
+def test_pixelize_generalized_internal_import_forms(source: str, dynamic: bool) -> None:
+    importer = "pixipix.stages.pixelize.api"
+    if dynamic:
+        violations = _dynamic_import_violations(
+            importer,
+            ast.parse(source),
+            GOVERNED_DYNAMIC_TARGETS,
+        )
+    else:
+        violations, _symbols, _roots = _pixelize_dependency_violations(
+            _collect_source(importer, "pixipix.stages.pixelize", source),
+            {_module(path) for path in _production_files()},
+        )
+    assert violations, f"Pixelize governed import bypass was accepted: {source}"
+
+
+@pytest.mark.parametrize(
+    ("importer", "package", "source", "dynamic"),
+    [
+        (
+            "pixipix.stages.align.api",
+            "pixipix.stages.align",
+            "from pixipix.pipeline.input import validate_stage_input as validate",
+            False,
+        ),
+        (
+            "pixipix.stages.scale.api",
+            "pixipix.stages.scale",
+            "def load():\n    from pixipix.resources import enforce_resource_policy",
+            False,
+        ),
+        (
+            "pixipix.stages.pixelize.api",
+            "pixipix.stages.pixelize",
+            "__import__('pixipix.pipeline.publication')",
+            True,
+        ),
+        (
+            "pixipix.pipeline.input",
+            "pixipix.pipeline",
+            "from importlib import import_module as load\nload('pixipix.pipeline.artifacts')",
+            True,
+        ),
+    ],
+)
+def test_shared_pipeline_generalized_import_forms(
+    importer: str,
+    package: str,
+    source: str,
+    dynamic: bool,
+) -> None:
+    if dynamic:
+        violations = _dynamic_import_violations(
+            importer,
+            ast.parse(source),
+            GOVERNED_DYNAMIC_TARGETS,
+        )
+    else:
+        contract = next(
+            contract for contract in STAGE_DEPENDENCY_CONTRACTS if importer in contract.modules
+        )
+        violations, _symbols, _roots = _governed_dependency_violations(
+            contract,
+            _collect_source(importer, package, source),
+            {_module(path) for path in _production_files()},
+        )
+    assert violations, f"shared pipeline governed import bypass was accepted: {source}"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from .planning import project_align_stage",
+        "from typing import TYPE_CHECKING as CHECK_TYPES\n"
+        "if CHECK_TYPES:\n"
+        "    if nested:\n"
+        "        from .planning import project_align_stage",
+    ],
+)
+def test_type_checking_bindings_are_hidden_but_not_hard(source: str) -> None:
+    edges = _collect_source(
+        "pixipix.stages.align.api",
+        "pixipix.stages.align",
+        source,
+    )
+    edge = next(edge for edge in edges if edge.imported == "pixipix.stages.align.planning")
+    assert edge.hidden is True
+    assert edge.hard is False
+    assert edge.type_only is True
+    violations, _symbols, _roots = _align_dependency_violations(
+        edges,
+        {_module(path) for path in _production_files()},
+    )
+    assert any("type-only placement" in violation for violation in violations)
+
+    module_alias_edges = _collect_source(
+        "pixipix.stages.align.api",
+        "pixipix.stages.align",
+        "import typing as type_hints\n"
+        "if type_hints.TYPE_CHECKING:\n"
+        "    from .planning import project_align_stage",
+    )
+    module_alias_edge = next(
+        edge for edge in module_alias_edges if edge.imported == "pixipix.stages.align.planning"
+    )
+    assert (module_alias_edge.hidden, module_alias_edge.hard) == (True, False)
+
+    _assert_no_hard_cycle(
+        [
+            edge,
+            *_collect_source(
+                "pixipix.stages.align.planning",
+                "pixipix.stages.align",
+                "from .api import publish_align",
+            ),
+        ],
+        {"pixipix.stages.align.api", "pixipix.stages.align.planning"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_hard"),
+    [
+        (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING and condition:\n"
+            "    from .planning import project_align_stage",
+            False,
+        ),
+        (
+            "from typing import TYPE_CHECKING\n"
+            "if condition and TYPE_CHECKING:\n"
+            "    from .planning import project_align_stage",
+            False,
+        ),
+        (
+            "from typing import TYPE_CHECKING as TC\n"
+            "if TC and condition:\n"
+            "    from .planning import project_align_stage",
+            False,
+        ),
+        (
+            "import typing as type_hints\n"
+            "if type_hints.TYPE_CHECKING and condition:\n"
+            "    from .planning import project_align_stage",
+            False,
+        ),
+        (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING or condition:\n"
+            "    from .planning import project_align_stage",
+            True,
+        ),
+        (
+            "from typing import TYPE_CHECKING\n"
+            "if not TYPE_CHECKING:\n"
+            "    from .planning import project_align_stage",
+            True,
+        ),
+        (
+            "from typing import TYPE_CHECKING as TC\n"
+            "TC = True\n"
+            "if TC:\n"
+            "    from .planning import project_align_stage",
+            True,
+        ),
+        (
+            "from typing import TYPE_CHECKING as TC\n"
+            "TC: bool = True\n"
+            "if TC:\n"
+            "    from .planning import project_align_stage",
+            True,
+        ),
+        (
+            "import typing as type_hints\n"
+            "type_hints = runtime_flags\n"
+            "if type_hints.TYPE_CHECKING:\n"
+            "    from .planning import project_align_stage",
+            True,
+        ),
+    ],
+)
+def test_type_checking_compound_guards_and_shadowing(
+    source: str,
+    expected_hard: bool,
+) -> None:
+    edges = _collect_source(
+        "pixipix.stages.align.api",
+        "pixipix.stages.align",
+        source,
+    )
+    edge = next(edge for edge in edges if edge.imported == "pixipix.stages.align.planning")
+    assert (edge.hidden, edge.hard) == (True, expected_hard)
+    assert edge.type_only is not expected_hard
+
+    violations, _symbols, _roots = _align_dependency_violations(
+        edges,
+        {_module(path) for path in _production_files()},
+    )
+    placement = "runtime-hidden" if expected_hard else "type-only"
+    assert any(f"{placement} placement" in violation for violation in violations)
+
+
+def test_shadowed_type_checking_edge_reaches_hard_cycle_graph() -> None:
+    edges = _collect_source(
+        "pixipix.stages.align.api",
+        "pixipix.stages.align",
+        "from typing import TYPE_CHECKING as TC\n"
+        "if TC:\n"
+        "    from .planning import project_align_stage\n"
+        "TC = True\n"
+        "if TC:\n"
+        "    from .planning import project_align_stage",
+    )
+    planning_edges = [edge for edge in edges if edge.imported == "pixipix.stages.align.planning"]
+    assert [edge.hard for edge in planning_edges] == [False, True]
+    assert [edge.type_only for edge in planning_edges] == [True, False]
+
+    reverse_edge = _collect_source(
+        "pixipix.stages.align.planning",
+        "pixipix.stages.align",
+        "from .api import publish_align",
+    )[0]
+    modules = {"pixipix.stages.align.api", "pixipix.stages.align.planning"}
+    _assert_no_hard_cycle([planning_edges[0], reverse_edge], modules)
+    with pytest.raises(AssertionError, match="hard import cycle"):
+        _assert_no_hard_cycle([*planning_edges, reverse_edge], modules)
+
+
+@pytest.mark.parametrize(
+    ("source", "rejected"),
+    [
+        (
+            "import importlib as loader\nloader.import_module('pixipix.stages.align.planning')",
+            True,
+        ),
+        ("loader.import_module('pixipix.stages.align.planning')", False),
+    ],
+)
+def test_dynamic_import_receiver_resolution_is_precise(source: str, rejected: bool) -> None:
+    violations = _dynamic_import_violations(
+        "pixipix.stages.align.api",
+        ast.parse(source),
+        GOVERNED_DYNAMIC_TARGETS,
+    )
+    assert bool(violations) is rejected
+    if rejected:
+        assert "dynamically imports pixipix.stages.align.planning" in violations[0]
+
+    ordinary_alias_edges = _collect_source(
+        "pixipix.stages.scale.execution",
+        "pixipix.stages.scale",
+        "import numpy as array_library",
+    )
+    ordinary_alias_violations, _symbols, _roots = _scale_dependency_violations(
+        ordinary_alias_edges,
+        {_module(path) for path in _production_files()},
+    )
+    assert not ordinary_alias_violations
+
+
+@pytest.mark.parametrize(
+    ("source", "rejected"),
+    [
+        (
+            "import importlib as il\nil.import_module('pixipix.stages.scale')\nil = custom_loader",
+            True,
+        ),
+        (
+            "import importlib as il\nil = custom_loader\nil.import_module('pixipix.stages.scale')",
+            False,
+        ),
+        (
+            "from importlib import import_module as load\n"
+            "load('pixipix.stages.scale')\n"
+            "load = custom_loader",
+            True,
+        ),
+        (
+            "from importlib import import_module as load\n"
+            "load = custom_loader\n"
+            "load('pixipix.stages.scale')",
+            False,
+        ),
+        (
+            "import importlib as il\n"
+            "il: Loader = custom_loader\n"
+            "il.import_module('pixipix.stages.scale')",
+            False,
+        ),
+        (
+            "from importlib import import_module as load\n"
+            "load: Callable[..., object] = custom_loader\n"
+            "load('pixipix.stages.scale')",
+            False,
+        ),
+        (
+            "load = __import__\nload('pixipix.stages.scale')",
+            True,
+        ),
+        (
+            "loader = custom_loader\nloader.import_module('pixipix.stages.scale')",
+            False,
+        ),
+    ],
+)
+def test_dynamic_import_alias_rebinding_is_source_ordered(
+    source: str,
+    rejected: bool,
+) -> None:
+    violations = _dynamic_import_violations(
+        "pixipix.stages.align.api",
+        ast.parse(source),
+        GOVERNED_DYNAMIC_TARGETS,
+    )
+    assert bool(violations) is rejected
+
+
 def test_only_locked_stage_to_stage_rounding_edge_exists() -> None:
     modules = {_module(path) for path in _production_files()}
     stage_edges = _cross_stage_edges(_edges(), modules)
@@ -2033,6 +2765,40 @@ def test_resource_projection_formulas_remain_stage_local() -> None:
             f"stage-local resource formula: pixipix.resources defines {function}; "
             f"it must remain owned by pixipix.stages.{stage}"
         )
+
+    modules = {_module(path) for path in _production_files()}
+    resource_error_edge = next(
+        edge
+        for edge in _edges()
+        if edge.importer == "pixipix.resources"
+        and edge.imported == "pixipix.errors"
+        and edge.names == ("ResourcePolicyError",)
+    )
+    assert resource_error_edge.hidden is True
+    assert resource_error_edge.hard is False
+    assert resource_error_edge.type_only is False
+    for contract in (*STAGE_DEPENDENCY_CONTRACTS, PIPELINE_DEPENDENCY_CONTRACT):
+        violations, _symbols, _roots = _governed_dependency_violations(
+            contract,
+            [resource_error_edge],
+            modules,
+        )
+        assert not violations, (
+            "the generalized governed-edge rule rejected the legitimate local "
+            "resources-to-errors cycle break"
+        )
+
+    governed_local_edge = _collect_source(
+        "pixipix.stages.align.api",
+        "pixipix.stages.align",
+        "def load():\n    from .planning import project_align_stage",
+    )[-1]
+    assert (governed_local_edge.hidden, governed_local_edge.type_only) == (True, False)
+    governed_violations, _symbols, _roots = _align_dependency_violations(
+        [governed_local_edge],
+        modules,
+    )
+    assert any("runtime-hidden placement" in violation for violation in governed_violations)
 
 
 def test_canonical_json_writes_remain_in_serialization_module() -> None:
@@ -2088,37 +2854,18 @@ def test_align_internal_module_set_and_dependency_direction_are_exact() -> None:
         f"unexpected={sorted(actual_modules - ALIGN_MODULES)}"
     )
 
-    violations: list[str] = []
-    internal_edges: set[tuple[str, str]] = set()
-    for edge in _edges():
-        if edge.importer not in ALIGN_MODULES:
-            continue
-        if (
-            not edge.imported.startswith("pixipix")
-            and edge.imported not in ALIGN_ALLOWED_EXTERNAL_IMPORTS[edge.importer]
-        ):
-            violations.append(_failure("align external capability", edge))
-        if edge.imported.startswith("pixipix.pipeline.") and (
-            set(edge.names)
-            - ALIGN_ALLOWED_PIPELINE_SYMBOLS.get((edge.importer, edge.imported), set())
-        ):
-            violations.append(_failure("align shared pipeline capability", edge))
-        for target in _target_modules(edge, modules):
-            if target in ALIGN_MODULES:
-                internal_edges.add((edge.importer, target))
-                if (edge.importer, target) not in ALIGN_ALLOWED_INTERNAL_EDGES:
-                    violations.append(_failure("align internal dependency direction", edge))
-            if (
-                target.startswith("pixipix")
-                and target not in ALIGN_ALLOWED_PIXIPIX_DEPENDENCIES[edge.importer]
-            ):
-                violations.append(_failure("align layer capability", edge))
+    violations, internal_symbols, root_imports = _align_dependency_violations(
+        _edges(),
+        modules,
+    )
 
     assert not violations, "\n".join(violations)
-    assert internal_edges == ALIGN_ALLOWED_INTERNAL_EDGES, (
+    assert root_imports == ALIGN_ALLOWED_ROOT_IMPORTS
+    assert internal_symbols == ALIGN_ALLOWED_INTERNAL_SYMBOLS, (
         "align internal dependency graph differs: "
-        f"missing={sorted(ALIGN_ALLOWED_INTERNAL_EDGES - internal_edges)}, "
-        f"unexpected={sorted(internal_edges - ALIGN_ALLOWED_INTERNAL_EDGES)}"
+        f"missing={sorted(set(ALIGN_ALLOWED_INTERNAL_SYMBOLS) - set(internal_symbols))}, "
+        f"unexpected={sorted(set(internal_symbols) - set(ALIGN_ALLOWED_INTERNAL_SYMBOLS))}, "
+        f"symbols={internal_symbols}"
     )
 
 
