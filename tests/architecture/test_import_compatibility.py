@@ -5,10 +5,13 @@ import importlib
 import inspect
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from typing import Literal
+
+import pytest
 
 from pixipix.config import load_config
 from pixipix.stages.align import AlignmentStagePlan, project_align_stage
@@ -42,7 +45,7 @@ CompatibilityModule = Literal[
     "pixipix.stages.io",
 ]
 SymbolKind = Literal["function", "class", "value"]
-Classification = Literal["public", "internal", "private-but-consumed", "monkeypatch-sensitive"]
+Classification = Literal["public", "internal", "private-but-consumed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +160,7 @@ MATRIX = (
         "pixipix.stages.extract.api",
         "_materialize_frame_crop",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         signature="(analysis: '_Analysis', component: 'Component', frame: 'ExtractedFrame') "
         "-> 'FrameImage'",
     ),
@@ -200,43 +203,43 @@ MATRIX = (
     _symbol(
         "pixipix.stages.extract.publication",
         "_valid_frame_png",
-        ("monkeypatch",),
-        "monkeypatch-sensitive",
+        ("tests",),
+        "private-but-consumed",
         signature="(path: 'Path', expected_size: 'tuple[int, int] | None' = None) -> 'bool'",
     ),
     _symbol(
         "pixipix.stages.extract.analysis",
         "load_source",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         signature="(path: 'Path', config: 'SourceConfig') -> 'SourceImage'",
     ),
     _symbol(
         "pixipix.stages.extract.publication",
         "Image",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         "value",
     ),
     _symbol(
         "pixipix.stages.extract.analysis",
         "np",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         "value",
     ),
     _symbol(
         "pixipix.stages.extract.execution",
         "np",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         "value",
     ),
     _symbol(
         "pixipix.stages.extract.publication",
         "write_png",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         signature="(path: 'Path', pixels: 'UInt8Image') -> 'None'",
     ),
     _symbol(
@@ -330,7 +333,7 @@ MATRIX = (
         "pixipix.stages.scale.api",
         "decode_stage_input",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         signature="(validated: 'ValidatedStageInput') -> 'LoadedStageInput'",
     ),
     _symbol(
@@ -462,7 +465,7 @@ MATRIX = (
         "pixipix.stages.pixelize.api",
         "decode_stage_input",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         signature="(validated: 'ValidatedStageInput') -> 'LoadedStageInput'",
     ),
     _symbol(
@@ -527,7 +530,7 @@ MATRIX = (
         "pixipix.stages.align.api",
         "decode_stage_input",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         signature="(validated: 'ValidatedStageInput') -> 'LoadedStageInput'",
     ),
     _symbol("pixipix.pipeline.input", "InputStageFrame", ("facade",), "internal", "class"),
@@ -565,7 +568,14 @@ MATRIX = (
         "pixipix.pipeline.input",
         "Image",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
+        "value",
+    ),
+    _symbol(
+        "pixipix.pipeline.input",
+        "np",
+        ("monkeypatch",),
+        "private-but-consumed",
         "value",
     ),
     _symbol(
@@ -605,16 +615,23 @@ MATRIX = (
     ),
     _symbol(
         "pixipix.pipeline.publication",
+        "Image",
+        ("monkeypatch",),
+        "private-but-consumed",
+        "value",
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
         "write_json",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         signature="(path: 'Path', value: 'object') -> 'None'",
     ),
     _symbol(
         "pixipix.pipeline.publication",
         "write_png",
         ("monkeypatch",),
-        "monkeypatch-sensitive",
+        "private-but-consumed",
         signature="(path: 'Path', pixels: 'UInt8Image') -> 'None'",
     ),
     _symbol("pixipix.stages.io", "InputStageFrame", ("facade",), "internal", "class"),
@@ -762,12 +779,259 @@ def _consumed_symbols() -> set[tuple[str, str]]:
     return consumed
 
 
-def _resolve_monkeypatch_target(target: str) -> object:
-    module_name, _, attribute_path = target.partition(":")
-    value: object = importlib.import_module(module_name)
-    for part in attribute_path.split("."):
-        value = getattr(value, part)
-    return value
+type PatchAuthorityRegistries = Mapping[str, frozenset[str]]
+
+
+DECLARED_PATCH_SEAMS = frozenset(
+    {
+        "pixipix.pipeline.publication.write_json",
+        "pixipix.pipeline.publication.write_png",
+        "pixipix.stages.align.api.decode_stage_input",
+        "pixipix.stages.extract.analysis.load_source",
+        "pixipix.stages.extract.api._materialize_frame_crop",
+        "pixipix.stages.extract.publication._validate_staged_output",
+        "pixipix.stages.extract.publication.write_png",
+        "pixipix.stages.pixelize.api.decode_stage_input",
+        "pixipix.stages.scale.api.decode_stage_input",
+    }
+)
+
+OWNER_LOCAL_DEPENDENCIES = frozenset(
+    {
+        "pixipix.imageio.Image",
+        "pixipix.pipeline.input.Image",
+        "pixipix.pipeline.input.np",
+        "pixipix.pipeline.publication.Image",
+        "pixipix.stages.extract.analysis.np",
+        "pixipix.stages.extract.execution.np",
+        "pixipix.stages.extract.publication.Image",
+        "pixipix.stages.pixelize.execution.np",
+        "pixipix.stages.scale.execution.Image",
+        "pixipix.stages.scale.execution.np",
+    }
+)
+
+BROAD_NECESSARY_SEAMS = frozenset({"pathlib.Path.replace"})
+
+DELIBERATE_NON_SEAMS = frozenset(
+    {
+        "pixipix.pipeline.publication._prepare_target",
+        "pixipix.pipeline.publication._remove_tree",
+        "pixipix.stages.extract.publication._prepare_target",
+        "pixipix.stages.extract.publication._remove_temporary_tree",
+        "pixipix.stages.extract.publication._valid_frame_png",
+    }
+)
+
+EXPECTED_DECLARED_PATCH_SEAMS = frozenset(
+    {
+        "pixipix.pipeline.publication.write_json",
+        "pixipix.pipeline.publication.write_png",
+        "pixipix.stages.align.api.decode_stage_input",
+        "pixipix.stages.extract.analysis.load_source",
+        "pixipix.stages.extract.api._materialize_frame_crop",
+        "pixipix.stages.extract.publication._validate_staged_output",
+        "pixipix.stages.extract.publication.write_png",
+        "pixipix.stages.pixelize.api.decode_stage_input",
+        "pixipix.stages.scale.api.decode_stage_input",
+    }
+)
+
+EXPECTED_OWNER_LOCAL_DEPENDENCIES = frozenset(
+    {
+        "pixipix.imageio.Image",
+        "pixipix.pipeline.input.Image",
+        "pixipix.pipeline.input.np",
+        "pixipix.pipeline.publication.Image",
+        "pixipix.stages.extract.analysis.np",
+        "pixipix.stages.extract.execution.np",
+        "pixipix.stages.extract.publication.Image",
+        "pixipix.stages.pixelize.execution.np",
+        "pixipix.stages.scale.execution.Image",
+        "pixipix.stages.scale.execution.np",
+    }
+)
+
+EXPECTED_BROAD_NECESSARY_SEAMS = frozenset({"pathlib.Path.replace"})
+
+EXPECTED_DELIBERATE_NON_SEAMS = frozenset(
+    {
+        "pixipix.pipeline.publication._prepare_target",
+        "pixipix.pipeline.publication._remove_tree",
+        "pixipix.stages.extract.publication._prepare_target",
+        "pixipix.stages.extract.publication._remove_temporary_tree",
+        "pixipix.stages.extract.publication._valid_frame_png",
+    }
+)
+
+PATCH_AUTHORITY_REGISTRIES: PatchAuthorityRegistries = MappingProxyType(
+    {
+        "broad necessary seam": BROAD_NECESSARY_SEAMS,
+        "declared seam": DECLARED_PATCH_SEAMS,
+        "deliberate non-seam": DELIBERATE_NON_SEAMS,
+        "owner-local dependency": OWNER_LOCAL_DEPENDENCIES,
+    }
+)
+
+EXPECTED_PATCH_AUTHORITY_REGISTRIES: PatchAuthorityRegistries = MappingProxyType(
+    {
+        "broad necessary seam": EXPECTED_BROAD_NECESSARY_SEAMS,
+        "declared seam": EXPECTED_DECLARED_PATCH_SEAMS,
+        "deliberate non-seam": EXPECTED_DELIBERATE_NON_SEAMS,
+        "owner-local dependency": EXPECTED_OWNER_LOCAL_DEPENDENCIES,
+    }
+)
+
+PATCH_AUTHORITY_CLASSIFICATIONS = MappingProxyType(
+    {
+        **{binding: "declared seam" for binding in DECLARED_PATCH_SEAMS},
+        **{binding: "owner-local dependency" for binding in OWNER_LOCAL_DEPENDENCIES},
+        **{binding: "broad necessary seam" for binding in BROAD_NECESSARY_SEAMS},
+        **{binding: "deliberate non-seam" for binding in DELIBERATE_NON_SEAMS},
+    }
+)
+
+EXPECTED_PATCH_CLASSIFICATIONS = MappingProxyType(
+    {
+        **{binding: "declared seam" for binding in EXPECTED_DECLARED_PATCH_SEAMS},
+        **{binding: "owner-local dependency" for binding in EXPECTED_OWNER_LOCAL_DEPENDENCIES},
+        **{binding: "broad necessary seam" for binding in EXPECTED_BROAD_NECESSARY_SEAMS},
+        **{binding: "deliberate non-seam" for binding in EXPECTED_DELIBERATE_NON_SEAMS},
+    }
+)
+
+_EXPECTED_REGISTRY_NAMES = frozenset(
+    {
+        "broad necessary seam",
+        "declared seam",
+        "deliberate non-seam",
+        "owner-local dependency",
+    }
+)
+_REPRESENTATIVE_IMPLEMENTATION_PROBE = "pixipix.stages.align.api.validate_stage_input"
+_REPRESENTATIVE_HARNESS_PATCH = "pixipix.cli.inspect_source"
+_WRONG_OWNER_SUBSTITUTION = "pixipix.pipeline.input.decode_stage_input"
+_FOUNDATIONAL_LIBRARY_SUBSTITUTION = "PIL.Image"
+_KNOWN_INVALID_CLASSIFICATIONS = {
+    _REPRESENTATIVE_IMPLEMENTATION_PROBE: "implementation probe",
+    _REPRESENTATIVE_HARNESS_PATCH: "harness-only patch",
+    _WRONG_OWNER_SUBSTITUTION: "consumer runtime owner",
+    _FOUNDATIONAL_LIBRARY_SUBSTITUTION: "consumer-owned module binding",
+}
+
+
+def _resolve_patch_binding(binding: str) -> object:
+    parts = binding.split(".")
+    for boundary in range(len(parts), 0, -1):
+        try:
+            value: object = importlib.import_module(".".join(parts[:boundary]))
+        except ModuleNotFoundError:
+            continue
+        for attribute in parts[boundary:]:
+            value = getattr(value, attribute)
+        return value
+    raise AssertionError(f"unable to import patch binding {binding}")
+
+
+def _registry_members(registries: PatchAuthorityRegistries) -> dict[str, frozenset[str]]:
+    return dict(registries)
+
+
+def _registry_classifications(
+    members: Mapping[str, frozenset[str]],
+    *,
+    expected_classifications: Mapping[str, str],
+) -> dict[str, str]:
+    classifications_by_binding: dict[str, list[str]] = {}
+    for classification, bindings in members.items():
+        for binding in bindings:
+            classifications_by_binding.setdefault(binding, []).append(classification)
+    for binding, classifications in sorted(classifications_by_binding.items()):
+        if len(classifications) > 1:
+            actual = ", ".join(sorted(classifications))
+            expected = expected_classifications.get(binding, "one compatible registry")
+            raise _patch_registry_error(
+                registry=actual,
+                binding=binding,
+                actual=actual,
+                expected=expected,
+                remediation="classify the binding in exactly one compatible stable registry",
+            )
+    return {
+        binding: classifications[0]
+        for binding, classifications in classifications_by_binding.items()
+    }
+
+
+def _patch_registry_error(
+    *,
+    registry: str,
+    binding: str,
+    actual: str,
+    expected: str,
+    remediation: str,
+) -> AssertionError:
+    return AssertionError(
+        f"registry={registry}; binding={binding}; actual classification={actual}; "
+        f"expected classification={expected}; remediation={remediation}"
+    )
+
+
+def _validate_patch_authority_registries(
+    candidate_registries: PatchAuthorityRegistries,
+    expected_registries: PatchAuthorityRegistries,
+    expected_classifications: Mapping[str, str],
+) -> None:
+    candidate_members = _registry_members(candidate_registries)
+    expected_members = _registry_members(expected_registries)
+    if frozenset(candidate_members) != _EXPECTED_REGISTRY_NAMES:
+        raise AssertionError("candidate patch-authority registry names are incomplete or unknown")
+    if frozenset(expected_members) != _EXPECTED_REGISTRY_NAMES:
+        raise AssertionError("expected patch-authority registry names are incomplete or unknown")
+
+    candidate_classifications = _registry_classifications(
+        candidate_members,
+        expected_classifications=expected_classifications,
+    )
+    derived_expected_classifications = _registry_classifications(
+        expected_members,
+        expected_classifications=expected_classifications,
+    )
+    if dict(expected_classifications) != derived_expected_classifications:
+        all_expected_bindings = sorted(
+            set(expected_classifications) | set(derived_expected_classifications)
+        )
+        for binding in all_expected_bindings:
+            supplied = expected_classifications.get(binding, "unregistered")
+            derived = derived_expected_classifications.get(binding, "unregistered")
+            if supplied != derived:
+                raise _patch_registry_error(
+                    registry="expected contract",
+                    binding=binding,
+                    actual=supplied,
+                    expected=derived,
+                    remediation="derive classifications from the independent expected literals",
+                )
+        raise AssertionError("expected patch classifications do not match expected registries")
+
+    all_bindings = sorted(set(candidate_classifications) | set(derived_expected_classifications))
+    for binding in all_bindings:
+        actual = candidate_classifications.get(binding, "omitted")
+        required_classification = expected_classifications.get(binding)
+        if required_classification is None:
+            required_classification = _KNOWN_INVALID_CLASSIFICATIONS.get(binding, "unregistered")
+        if required_classification != actual:
+            registry = actual if actual != "omitted" else required_classification
+            raise _patch_registry_error(
+                registry=registry,
+                binding=binding,
+                actual=actual,
+                expected=required_classification,
+                remediation="use the locked execution-effective binding and classification",
+            )
+
+    for binding in sorted(candidate_classifications):
+        assert _resolve_patch_binding(binding) is not None
 
 
 def test_matrix_covers_every_current_consumed_stage_symbol() -> None:
@@ -789,25 +1053,207 @@ def test_every_compatibility_symbol_imports_with_expected_shape() -> None:
             assert str(inspect.signature(value)) == entry.signature
 
 
-def test_monkeypatch_sensitive_bindings_resolve_at_current_paths() -> None:
-    targets = (
-        "pixipix.pipeline.input:Image.open",
-        "pixipix.pipeline.publication:write_json",
-        "pixipix.pipeline.publication:write_png",
-        "pixipix.stages.extract.analysis:np.zeros",
-        "pixipix.stages.extract.analysis:load_source",
-        "pixipix.stages.extract.api:_materialize_frame_crop",
-        "pixipix.stages.extract.execution:np.array",
-        "pixipix.stages.extract.planning:_padded_bounds",
-        "pixipix.stages.extract.publication:Image.open",
-        "pixipix.stages.extract.publication:write_png",
-        "pixipix.stages.extract.publication:_validate_staged_output",
-        "pixipix.stages.scale.api:decode_stage_input",
-        "pixipix.stages.pixelize.api:decode_stage_input",
-        "pixipix.stages.align.api:decode_stage_input",
+def test_stable_patch_authority_registries_are_exact_and_resolve() -> None:
+    _validate_patch_authority_registries(
+        PATCH_AUTHORITY_REGISTRIES,
+        EXPECTED_PATCH_AUTHORITY_REGISTRIES,
+        EXPECTED_PATCH_CLASSIFICATIONS,
     )
-    for target in targets:
-        assert _resolve_monkeypatch_target(target) is not None
+    assert PATCH_AUTHORITY_REGISTRIES == EXPECTED_PATCH_AUTHORITY_REGISTRIES
+    assert PATCH_AUTHORITY_REGISTRIES is not EXPECTED_PATCH_AUTHORITY_REGISTRIES
+    assert DECLARED_PATCH_SEAMS is not EXPECTED_DECLARED_PATCH_SEAMS
+    assert OWNER_LOCAL_DEPENDENCIES is not EXPECTED_OWNER_LOCAL_DEPENDENCIES
+    assert BROAD_NECESSARY_SEAMS is not EXPECTED_BROAD_NECESSARY_SEAMS
+    assert DELIBERATE_NON_SEAMS is not EXPECTED_DELIBERATE_NON_SEAMS
+    assert PATCH_AUTHORITY_CLASSIFICATIONS == EXPECTED_PATCH_CLASSIFICATIONS
+    assert PATCH_AUTHORITY_CLASSIFICATIONS is not EXPECTED_PATCH_CLASSIFICATIONS
+    assert len(DECLARED_PATCH_SEAMS) == 9
+    assert len(OWNER_LOCAL_DEPENDENCIES) == 10
+    assert {"pathlib.Path.replace"} == BROAD_NECESSARY_SEAMS
+    assert len(DELIBERATE_NON_SEAMS) == 5
+
+
+def test_candidate_registry_copies_cannot_mutate_expected_contract() -> None:
+    expected_before = _registry_members(EXPECTED_PATCH_AUTHORITY_REGISTRIES)
+    expected_classifications_before = dict(EXPECTED_PATCH_CLASSIFICATIONS)
+
+    missing_declared = set(DECLARED_PATCH_SEAMS)
+    missing_declared.remove("pixipix.stages.align.api.decode_stage_input")
+    missing_candidate = dict(PATCH_AUTHORITY_REGISTRIES)
+    missing_candidate["declared seam"] = frozenset(missing_declared)
+    with pytest.raises(AssertionError, match="actual classification=omitted"):
+        _validate_patch_authority_registries(
+            missing_candidate,
+            EXPECTED_PATCH_AUTHORITY_REGISTRIES,
+            EXPECTED_PATCH_CLASSIFICATIONS,
+        )
+
+    extra_declared = set(DECLARED_PATCH_SEAMS)
+    extra_declared.add("pixipix.stages.align.api.validate_stage_input")
+    extra_candidate = dict(PATCH_AUTHORITY_REGISTRIES)
+    extra_candidate["declared seam"] = frozenset(extra_declared)
+    with pytest.raises(AssertionError, match="expected classification=implementation probe"):
+        _validate_patch_authority_registries(
+            extra_candidate,
+            EXPECTED_PATCH_AUTHORITY_REGISTRIES,
+            EXPECTED_PATCH_CLASSIFICATIONS,
+        )
+
+    missing_registry = dict(PATCH_AUTHORITY_REGISTRIES)
+    missing_registry.pop("broad necessary seam")
+    with pytest.raises(AssertionError, match="registry names are incomplete or unknown"):
+        _validate_patch_authority_registries(
+            missing_registry,
+            EXPECTED_PATCH_AUTHORITY_REGISTRIES,
+            EXPECTED_PATCH_CLASSIFICATIONS,
+        )
+
+    unknown_registry = dict(PATCH_AUTHORITY_REGISTRIES)
+    unknown_registry["unknown registry"] = frozenset()
+    with pytest.raises(AssertionError, match="registry names are incomplete or unknown"):
+        _validate_patch_authority_registries(
+            unknown_registry,
+            EXPECTED_PATCH_AUTHORITY_REGISTRIES,
+            EXPECTED_PATCH_CLASSIFICATIONS,
+        )
+
+    assert _registry_members(EXPECTED_PATCH_AUTHORITY_REGISTRIES) == expected_before
+    assert dict(EXPECTED_PATCH_CLASSIFICATIONS) == expected_classifications_before
+
+
+def test_expected_registry_contract_is_independently_controlled() -> None:
+    candidate_before = _registry_members(PATCH_AUTHORITY_REGISTRIES)
+    expected_before = _registry_members(EXPECTED_PATCH_AUTHORITY_REGISTRIES)
+    expected_classifications_before = dict(EXPECTED_PATCH_CLASSIFICATIONS)
+    _validate_patch_authority_registries(
+        PATCH_AUTHORITY_REGISTRIES,
+        EXPECTED_PATCH_AUTHORITY_REGISTRIES,
+        EXPECTED_PATCH_CLASSIFICATIONS,
+    )
+
+    omitted_binding = "pixipix.stages.align.api.decode_stage_input"
+    modified_expected_declared = set(EXPECTED_DECLARED_PATCH_SEAMS)
+    modified_expected_declared.remove(omitted_binding)
+    modified_expected = dict(EXPECTED_PATCH_AUTHORITY_REGISTRIES)
+    modified_expected["declared seam"] = frozenset(modified_expected_declared)
+    modified_expected_classifications = dict(EXPECTED_PATCH_CLASSIFICATIONS)
+    modified_expected_classifications.pop(omitted_binding)
+
+    with pytest.raises(AssertionError) as raised:
+        _validate_patch_authority_registries(
+            PATCH_AUTHORITY_REGISTRIES,
+            modified_expected,
+            modified_expected_classifications,
+        )
+    diagnostic = str(raised.value)
+    assert f"binding={omitted_binding}" in diagnostic
+    assert "actual classification=declared seam" in diagnostic
+    assert "expected classification=unregistered" in diagnostic
+
+    assert _registry_members(PATCH_AUTHORITY_REGISTRIES) == candidate_before
+    assert _registry_members(EXPECTED_PATCH_AUTHORITY_REGISTRIES) == expected_before
+    assert dict(EXPECTED_PATCH_CLASSIFICATIONS) == expected_classifications_before
+
+    missing_expected_registry = dict(EXPECTED_PATCH_AUTHORITY_REGISTRIES)
+    missing_expected_registry.pop("broad necessary seam")
+    with pytest.raises(AssertionError, match="registry names are incomplete or unknown"):
+        _validate_patch_authority_registries(
+            PATCH_AUTHORITY_REGISTRIES,
+            missing_expected_registry,
+            EXPECTED_PATCH_CLASSIFICATIONS,
+        )
+
+
+PatchRegistryMutation = Literal[
+    "omit-declared",
+    "add-non-seam",
+    "add-probe",
+    "add-harness",
+    "substitute-wrong-owner",
+    "substitute-foundational-library",
+    "omit-dependency",
+    "omit-non-seam",
+    "double-classify",
+]
+
+
+def _mutated_patch_registries(mutation: PatchRegistryMutation) -> PatchAuthorityRegistries:
+    declared = set(DECLARED_PATCH_SEAMS)
+    dependencies = set(OWNER_LOCAL_DEPENDENCIES)
+    broad = set(BROAD_NECESSARY_SEAMS)
+    non_seams = set(DELIBERATE_NON_SEAMS)
+    if mutation == "omit-declared":
+        declared.remove("pixipix.stages.align.api.decode_stage_input")
+    elif mutation == "add-non-seam":
+        declared.add("pixipix.stages.extract.publication._valid_frame_png")
+    elif mutation == "add-probe":
+        declared.add(_REPRESENTATIVE_IMPLEMENTATION_PROBE)
+    elif mutation == "add-harness":
+        declared.add(_REPRESENTATIVE_HARNESS_PATCH)
+    elif mutation == "substitute-wrong-owner":
+        declared.remove("pixipix.stages.align.api.decode_stage_input")
+        declared.add(_WRONG_OWNER_SUBSTITUTION)
+    elif mutation == "substitute-foundational-library":
+        dependencies.remove("pixipix.stages.scale.execution.Image")
+        dependencies.add(_FOUNDATIONAL_LIBRARY_SUBSTITUTION)
+    elif mutation == "omit-dependency":
+        dependencies.remove("pixipix.stages.scale.execution.Image")
+    elif mutation == "omit-non-seam":
+        non_seams.remove("pixipix.stages.extract.publication._valid_frame_png")
+    elif mutation == "double-classify":
+        dependencies.add("pixipix.pipeline.publication.write_png")
+    return {
+        "broad necessary seam": frozenset(broad),
+        "declared seam": frozenset(declared),
+        "deliberate non-seam": frozenset(non_seams),
+        "owner-local dependency": frozenset(dependencies),
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "binding", "expected"),
+    [
+        ("omit-declared", "pixipix.stages.align.api.decode_stage_input", "declared seam"),
+        (
+            "add-non-seam",
+            "pixipix.stages.extract.publication._valid_frame_png",
+            "deliberate non-seam",
+        ),
+        ("add-probe", _REPRESENTATIVE_IMPLEMENTATION_PROBE, "implementation probe"),
+        ("add-harness", _REPRESENTATIVE_HARNESS_PATCH, "harness-only patch"),
+        ("substitute-wrong-owner", _WRONG_OWNER_SUBSTITUTION, "consumer runtime owner"),
+        (
+            "substitute-foundational-library",
+            _FOUNDATIONAL_LIBRARY_SUBSTITUTION,
+            "consumer-owned module binding",
+        ),
+        ("omit-dependency", "pixipix.stages.scale.execution.Image", "owner-local dependency"),
+        (
+            "omit-non-seam",
+            "pixipix.stages.extract.publication._valid_frame_png",
+            "deliberate non-seam",
+        ),
+        ("double-classify", "pixipix.pipeline.publication.write_png", "declared seam"),
+    ],
+)
+def test_stable_patch_registry_rejects_invalid_mutation(
+    mutation: PatchRegistryMutation,
+    binding: str,
+    expected: str,
+) -> None:
+    with pytest.raises(AssertionError) as raised:
+        _validate_patch_authority_registries(
+            _mutated_patch_registries(mutation),
+            EXPECTED_PATCH_AUTHORITY_REGISTRIES,
+            EXPECTED_PATCH_CLASSIFICATIONS,
+        )
+
+    diagnostic = str(raised.value)
+    assert f"binding={binding}" in diagnostic
+    assert "registry=" in diagnostic
+    assert "actual classification=" in diagnostic
+    assert f"expected classification={expected}" in diagnostic
+    assert "remediation=" in diagnostic
 
 
 def test_stages_io_facade_reexports_exact_pipeline_objects() -> None:

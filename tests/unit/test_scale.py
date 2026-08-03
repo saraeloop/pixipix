@@ -1,13 +1,23 @@
+# mypy: disable-error-code="attr-defined"
+
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pytest
 from PIL import Image
 
+import pixipix.imageio as imageio
+import pixipix.pipeline.input as pipeline_input
+import pixipix.pipeline.publication as pipeline_publication
+import pixipix.stages.extract.analysis as extract_analysis
+import pixipix.stages.extract.execution as extract_execution
+import pixipix.stages.extract.publication as extract_publication
+import pixipix.stages.pixelize.execution as pixelize_execution
 import pixipix.stages.scale.execution as scale_execution
 import pixipix.stages.scale.geometry as scale_geometry
 import pixipix.stages.scale.metadata as scale_metadata
@@ -380,23 +390,34 @@ def test_execution_image_binding_affects_real_resize(
 ) -> None:
     pixels = np.full((2, 2, 4), 255, dtype=np.uint8)
     global_fromarray = Image.fromarray
+    neighboring_images = (
+        pipeline_input.Image,
+        pipeline_publication.Image,
+        extract_publication.Image,
+        imageio.Image,
+    )
+    modes: list[object] = []
 
-    class ImageBindingReached(Exception):
-        pass
+    def record_fromarray(*args: object, **kwargs: object) -> object:
+        modes.append(kwargs.get("mode"))
+        return cast(Any, global_fromarray)(*args, **kwargs)
 
-    def mark_fromarray(*_args: object, **_kwargs: object) -> None:
-        raise ImageBindingReached("scale execution Image.fromarray reached")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(scale_execution, "Image", _ScaleImageProxy(record_fromarray))
+        output = premultiplied_box_resize(pixels, (1, 1))
 
-    monkeypatch.setattr(scale_execution, "Image", _ScaleImageProxy(mark_fromarray))
+        assert modes == ["RGBA"]
+        assert output.tolist() == [[[255, 255, 255, 255]]]
+        assert Image.fromarray is global_fromarray
+        assert (
+            pipeline_input.Image,
+            pipeline_publication.Image,
+            extract_publication.Image,
+            imageio.Image,
+        ) == neighboring_images
+
+    assert scale_execution.Image is Image
     assert Image.fromarray is global_fromarray
-    with pytest.raises(
-        ImageBindingReached, match=r"scale execution Image\.fromarray reached"
-    ) as raised:
-        premultiplied_box_resize(pixels, (1, 1))
-
-    traceback_names = tuple(entry.name for entry in raised.traceback)
-    assert "premultiplied_box_resize" in traceback_names
-    assert traceback_names[-1] == "mark_fromarray"
 
 
 def test_execution_image_binding_affects_transparent_float_channel_resize(
@@ -404,29 +425,36 @@ def test_execution_image_binding_affects_transparent_float_channel_resize(
 ) -> None:
     pixels = np.array([[[20, 40, 60, 128], [80, 100, 120, 0]]], dtype=np.uint8)
     global_fromarray = Image.fromarray
+    neighboring_images = (
+        pipeline_input.Image,
+        pipeline_publication.Image,
+        extract_publication.Image,
+        imageio.Image,
+    )
+    modes: list[object] = []
 
-    class FloatChannelImageBindingReached(Exception):
-        pass
-
-    def mark_float_fromarray(*_args: object, **kwargs: object) -> None:
+    def record_float_fromarray(*args: object, **kwargs: object) -> object:
         if kwargs.get("mode") != "F":
             raise AssertionError("transparent resize reached a non-float Pillow path")
-        raise FloatChannelImageBindingReached(
-            "scale execution float-channel Image.fromarray reached"
-        )
+        modes.append(kwargs["mode"])
+        return cast(Any, global_fromarray)(*args, **kwargs)
 
-    monkeypatch.setattr(scale_execution, "Image", _ScaleImageProxy(mark_float_fromarray))
+    with monkeypatch.context() as scoped:
+        scoped.setattr(scale_execution, "Image", _ScaleImageProxy(record_float_fromarray))
+        output = premultiplied_box_resize(pixels, (1, 1))
+
+        assert modes == ["F", "F", "F", "F"]
+        assert output.shape == (1, 1, 4)
+        assert Image.fromarray is global_fromarray
+        assert (
+            pipeline_input.Image,
+            pipeline_publication.Image,
+            extract_publication.Image,
+            imageio.Image,
+        ) == neighboring_images
+
+    assert scale_execution.Image is Image
     assert Image.fromarray is global_fromarray
-    with pytest.raises(
-        FloatChannelImageBindingReached,
-        match=r"scale execution float-channel Image\.fromarray reached",
-    ) as raised:
-        premultiplied_box_resize(pixels, (1, 1))
-
-    traceback_names = tuple(entry.name for entry in raised.traceback)
-    assert "premultiplied_box_resize" in traceback_names
-    assert "_resize_float_channel" in traceback_names
-    assert traceback_names[-1] == "mark_float_fromarray"
 
 
 def test_opaque_fast_path_bypasses_premultiplied_stack(
@@ -455,16 +483,33 @@ def test_transparent_input_reaches_premultiplied_stack(
     def mark_stack(*_args: object, **_kwargs: object) -> None:
         raise PremultipliedPathReached("scale premultiplied np.stack reached")
 
-    _patch_scale_stack(monkeypatch, mark_stack)
+    neighboring_numpy = (
+        pixelize_execution.np,
+        extract_analysis.np,
+        extract_execution.np,
+        pipeline_input.np,
+    )
+    with monkeypatch.context() as scoped:
+        _patch_scale_stack(scoped, mark_stack)
+        assert np.stack is global_stack
+        with pytest.raises(
+            PremultipliedPathReached,
+            match=r"scale premultiplied np\.stack reached",
+        ) as raised:
+            premultiplied_box_resize(pixels, (1, 1))
+        traceback_names = tuple(entry.name for entry in raised.traceback)
+        assert "premultiplied_box_resize" in traceback_names
+        assert traceback_names[-1] == "mark_stack"
+        assert (
+            pixelize_execution.np,
+            extract_analysis.np,
+            extract_execution.np,
+            pipeline_input.np,
+        ) == neighboring_numpy
+        assert np.stack is global_stack
+
+    assert scale_execution.np is np
     assert np.stack is global_stack
-    with pytest.raises(
-        PremultipliedPathReached,
-        match=r"scale premultiplied np\.stack reached",
-    ) as raised:
-        premultiplied_box_resize(pixels, (1, 1))
-    traceback_names = tuple(entry.name for entry in raised.traceback)
-    assert "premultiplied_box_resize" in traceback_names
-    assert traceback_names[-1] == "mark_stack"
 
 
 def test_random_opaque_inputs_are_byte_equivalent_to_native_box() -> None:

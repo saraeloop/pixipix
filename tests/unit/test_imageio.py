@@ -1,6 +1,9 @@
+# mypy: disable-error-code="attr-defined"
+
 from __future__ import annotations
 
 import struct
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -8,11 +11,20 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import pixipix.imageio as imageio
 from pixipix.config import BackgroundConfig, SourceConfig
 from pixipix.errors import ProcessingError, UnsupportedInputError
 from pixipix.imageio import generate_foreground_mask, load_source, write_png
 from pixipix.models import SourceImage, UInt8Image
 from tests.helpers import write_rgb, write_rgba
+
+
+class _ImageIoPillowProxy:
+    def __init__(self, open_image: Callable[..., object]) -> None:
+        self.open = open_image
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(Image, name)
 
 
 def test_rgb_png_normalizes_to_rgba(tmp_path: Path) -> None:
@@ -99,10 +111,29 @@ def test_pillow_decompression_bomb_is_mapped_to_stable_input_error(
 ) -> None:
     path = tmp_path / "bomb.png"
     write_rgba(path, np.zeros((2, 2, 4), dtype=np.uint8))
-    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1)
+    foundational_max_pixels = Image.MAX_IMAGE_PIXELS
+    foundational_open = Image.open
+    foundational_bomb_error = Image.DecompressionBombError
 
-    with pytest.raises(UnsupportedInputError, match="PX_INPUT_004"):
-        load_source(path, SourceConfig())
+    def raise_decompression_bomb(_path: Path) -> None:
+        raise foundational_bomb_error("simulated oversized PNG")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(imageio, "Image", _ImageIoPillowProxy(raise_decompression_bomb))
+
+        with pytest.raises(UnsupportedInputError) as raised:
+            load_source(path, SourceConfig())
+
+        assert raised.value.code == "PX_INPUT_004"
+        assert type(raised.value.__cause__) is foundational_bomb_error
+        assert str(raised.value.__cause__) == "simulated oversized PNG"
+        assert foundational_max_pixels == Image.MAX_IMAGE_PIXELS
+        assert Image.open is foundational_open
+        assert Image.DecompressionBombError is foundational_bomb_error
+
+    assert imageio.Image is Image
+    assert foundational_max_pixels == Image.MAX_IMAGE_PIXELS
+    assert Image.open is foundational_open
 
 
 def _source_from_pixels(tmp_path: Path, pixels: UInt8Image) -> tuple[Path, SourceImage]:

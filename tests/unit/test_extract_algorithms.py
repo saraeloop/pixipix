@@ -1,13 +1,18 @@
+# mypy: disable-error-code="attr-defined"
+
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from itertools import permutations
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PIL import Image
 
+import pixipix.imageio as imageio
+import pixipix.pipeline.publication as pipeline_publication
 import pixipix.stages.extract as extract_stage
 import pixipix.stages.extract.analysis as extract_analysis
 import pixipix.stages.extract.api as extract_api
@@ -25,7 +30,7 @@ from pixipix.stages.extract import (
     project_extract_resources,
     project_extracted_frames,
 )
-from tests.helpers import extraction_config, write_config, write_rgba
+from tests.helpers import extraction_config, transparent_sheet, write_config, write_rgba
 
 
 class _ExtractNumpyProxy:
@@ -42,6 +47,14 @@ class _ExtractExecutionNumpyProxy:
 
     def __getattr__(self, name: str) -> object:
         return getattr(np, name)
+
+
+class _ExtractPublicationImageProxy:
+    def __init__(self, open_image: Callable[..., object]) -> None:
+        self.open = open_image
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(Image, name)
 
 
 def test_four_and_eight_connectivity() -> None:
@@ -104,17 +117,35 @@ def test_staged_png_validation_uses_extract_publication_pillow_binding(
     def mark_open(_path: Path) -> None:
         raise ExtractImageOpenReached("extract publication Image.open reached")
 
-    monkeypatch.setattr(extract_publication, "Image", SimpleNamespace(open=mark_open))
+    foundational_image = Image
+    foundational_open = Image.open
+    pipeline_image = pipeline_publication.Image
+    imageio_image = imageio.Image
 
-    with pytest.raises(
-        ExtractImageOpenReached,
-        match=r"extract publication Image\.open reached",
-    ) as raised:
-        extract_publication._valid_frame_png(candidate)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            extract_publication,
+            "Image",
+            _ExtractPublicationImageProxy(mark_open),
+        )
+        with pytest.raises(
+            ExtractImageOpenReached,
+            match=r"extract publication Image\.open reached",
+        ) as raised:
+            extract_publication._valid_frame_png(candidate)
 
-    traceback_names = tuple(entry.name for entry in raised.traceback)
-    assert "_valid_frame_png" in traceback_names
-    assert traceback_names[-1] == "mark_open"
+        traceback_names = tuple(entry.name for entry in raised.traceback)
+        assert "_valid_frame_png" in traceback_names
+        assert traceback_names[-1] == "mark_open"
+        assert pipeline_publication.Image is pipeline_image
+        assert imageio.Image is imageio_image
+        assert Image is foundational_image
+        assert Image.open is foundational_open
+
+    assert extract_publication.Image is foundational_image
+    assert pipeline_publication.Image is pipeline_image
+    assert imageio.Image is imageio_image
+    assert Image.open is foundational_open
 
 
 def test_analysis_uses_authoritative_source_decoder_binding(
@@ -142,6 +173,33 @@ def test_analysis_uses_authoritative_source_decoder_binding(
     traceback_names = tuple(entry.name for entry in raised.traceback)
     assert "_analyze" in traceback_names
     assert traceback_names[-1] == "mark_load_source"
+
+
+def test_analysis_ignores_late_imageio_load_source_patch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = tmp_path / "source.png"
+    config = tmp_path / "project.toml"
+    write_rgba(image, transparent_sheet())
+    write_config(config)
+    loaded = load_config(config)
+    assert "pixipix.stages.extract.analysis" in sys.modules
+    retained_load_source = extract_analysis.load_source
+    calls = 0
+
+    def wrong_owner_load_source(*_args: object, **_kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("late imageio.load_source patch intercepted Extract analysis")
+
+    monkeypatch.setattr(imageio, "load_source", wrong_owner_load_source)
+
+    result = extract_stage.inspect_source(image, loaded)
+
+    assert len(result.accepted) == 2
+    assert calls == 0
+    assert extract_analysis.load_source is retained_load_source
 
 
 def test_row_major_discovery_and_exact_area_bounds() -> None:
