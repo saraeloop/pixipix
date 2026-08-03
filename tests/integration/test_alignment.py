@@ -1,3 +1,5 @@
+# mypy: disable-error-code="attr-defined"
+
 from __future__ import annotations
 
 import importlib
@@ -12,6 +14,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import pixipix.imageio as imageio
+import pixipix.pipeline.input as pipeline_input
 import pixipix.pipeline.publication as pipeline_publication
 from pixipix.config import load_config
 from pixipix.errors import (
@@ -74,6 +78,16 @@ def _artifact_bytes(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+class _PipelineInputImageProxy:
+    def __init__(self, open_image: Callable[..., object]) -> None:
+        self.open = open_image
+        self.DecompressionBombWarning = Image.DecompressionBombWarning
+        self.DecompressionBombError = Image.DecompressionBombError
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(Image, name)
 
 
 def test_align_api_preserves_exact_orchestration_order(
@@ -456,7 +470,11 @@ def test_align_publication_setup_failure_is_processing_error(tmp_path: Path) -> 
 def test_prior_png_header_is_validated_before_pixel_decode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, config, _, _, pixelized = _pipeline(tmp_path)
+    source, config, _, _, pixelized = _pipeline(tmp_path)
+    loaded = load_config(config)
+    real_pipeline_image = pipeline_input.Image
+    foundational_open = Image.open
+    proxy_calls = 0
 
     class MismatchedPng:
         format = "PNG"
@@ -472,22 +490,55 @@ def test_prior_png_header_is_validated_before_pixel_decode(
         def load(self) -> None:
             raise AssertionError("pixel decode occurred before header validation")
 
-    monkeypatch.setattr("pixipix.pipeline.input.Image.open", lambda _path: MismatchedPng())
-    with pytest.raises(UnsupportedInputError, match="PX_STAGE_012"):
-        publish_align(pixelized, load_config(config), tmp_path / "aligned")
+    def mismatched_open(_path: Path) -> MismatchedPng:
+        nonlocal proxy_calls
+        proxy_calls += 1
+        return MismatchedPng()
+
+    proxy = _PipelineInputImageProxy(mismatched_open)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(pipeline_input, "Image", proxy)
+        imageio.load_source(source, loaded.config.source)
+        assert proxy_calls == 0
+        with pytest.raises(UnsupportedInputError, match="PX_STAGE_012"):
+            publish_align(pixelized, loaded, tmp_path / "aligned")
+        assert proxy_calls == 1
+        assert Image.open is foundational_open
+        assert proxy.DecompressionBombWarning is Image.DecompressionBombWarning
+        assert proxy.DecompressionBombError is Image.DecompressionBombError
+
+    assert pipeline_input.Image is real_pipeline_image
+    assert Image.open is foundational_open
 
 
 def test_prior_png_decompression_bomb_is_unsupported_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, config, _, _, pixelized = _pipeline(tmp_path)
+    source, config, _, _, pixelized = _pipeline(tmp_path)
+    loaded = load_config(config)
+    real_pipeline_image = pipeline_input.Image
+    foundational_open = Image.open
+    proxy_calls = 0
 
     def fail_open(_path: Path) -> object:
+        nonlocal proxy_calls
+        proxy_calls += 1
         raise Image.DecompressionBombError("simulated oversized PNG")
 
-    monkeypatch.setattr("pixipix.pipeline.input.Image.open", fail_open)
-    with pytest.raises(UnsupportedInputError, match="PX_STAGE_012"):
-        publish_align(pixelized, load_config(config), tmp_path / "aligned")
+    proxy = _PipelineInputImageProxy(fail_open)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(pipeline_input, "Image", proxy)
+        imageio.load_source(source, loaded.config.source)
+        assert proxy_calls == 0
+        with pytest.raises(UnsupportedInputError, match="PX_STAGE_012"):
+            publish_align(pixelized, loaded, tmp_path / "aligned")
+        assert proxy_calls == 1
+        assert Image.open is foundational_open
+        assert proxy.DecompressionBombWarning is Image.DecompressionBombWarning
+        assert proxy.DecompressionBombError is Image.DecompressionBombError
+
+    assert pipeline_input.Image is real_pipeline_image
+    assert Image.open is foundational_open
 
 
 def test_align_repeated_processes_ignore_mtime_and_are_byte_identical(tmp_path: Path) -> None:

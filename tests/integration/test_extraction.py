@@ -1,3 +1,5 @@
+# mypy: disable-error-code="attr-defined"
+
 from __future__ import annotations
 
 import json
@@ -10,7 +12,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import pixipix.imageio as imageio
 import pixipix.stages.extract.api as extract_api
+import pixipix.stages.extract.execution as extract_execution
 import pixipix.stages.extract.publication as extract_publication
 from pixipix.config import load_config
 from pixipix.errors import ProcessingError, ResourcePolicyError
@@ -237,6 +241,54 @@ def test_admitted_extract_uses_package_crop_binding(
     assert list(tmp_path.glob(".output.pixipix-build-*")) == []
 
 
+def test_extract_api_ignores_late_execution_crop_patch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "output"
+    assert "pixipix.stages.extract.api" in sys.modules
+    retained_crop = extract_api._materialize_frame_crop
+    calls = 0
+
+    def wrong_owner_crop(*_args: object, **_kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("late execution crop patch intercepted Extract API")
+
+    monkeypatch.setattr(extract_execution, "_materialize_frame_crop", wrong_owner_crop)
+
+    result = publish_extraction(image, load_config(config), output)
+
+    assert [frame.name for frame in result.frames] == ["idle", "signal"]
+    assert calls == 0
+    assert extract_api._materialize_frame_crop is retained_crop
+
+
+def test_extract_publication_ignores_late_imageio_write_png_patch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image, config = _project(tmp_path)
+    output = tmp_path / "output"
+    assert "pixipix.stages.extract.publication" in sys.modules
+    retained_write_png = extract_publication.write_png
+    calls = 0
+
+    def wrong_owner_write_png(*_args: object, **_kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("late imageio.write_png patch intercepted Extract publication")
+
+    monkeypatch.setattr(imageio, "write_png", wrong_owner_write_png)
+
+    result = publish_extraction(image, load_config(config), output)
+
+    assert [frame.name for frame in result.frames] == ["idle", "signal"]
+    assert calls == 0
+    assert extract_publication.write_png is retained_write_png
+
+
 def test_nonempty_foreign_directory_is_never_replaced(tmp_path: Path) -> None:
     image, config = _project(tmp_path)
     output = tmp_path / "foreign"
@@ -438,15 +490,29 @@ def test_previous_output_is_restored_on_publication_failure(
     publish_extraction(image, loaded, output)
     original = _artifact_bytes(output)
     real_replace = Path.replace
+    intercepted: list[tuple[Path, Path]] = []
 
     def fail_new_publication(self: Path, target: Path) -> Path:
         if self.name.startswith(".owned.pixipix-build-") and target == output:
+            intercepted.append((self, target))
             raise OSError("simulated rename failure")
         return real_replace(self, target)
 
-    monkeypatch.setattr(Path, "replace", fail_new_publication)
-    with pytest.raises(ProcessingError, match="PX_OUTPUT_005"):
-        publish_extraction(image, loaded, output, force=True)
+    unrelated_source = tmp_path / "unrelated-source"
+    unrelated_target = tmp_path / "unrelated-target"
+    unrelated_source.write_text("delegated", encoding="utf-8")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "replace", fail_new_publication)
+        assert unrelated_source.replace(unrelated_target) == unrelated_target
+        assert unrelated_target.read_text(encoding="utf-8") == "delegated"
+        with pytest.raises(ProcessingError, match="PX_OUTPUT_005"):
+            publish_extraction(image, loaded, output, force=True)
+
+    assert Path.replace is real_replace
+    assert len(intercepted) == 1
+    assert intercepted[0][0].name.startswith(".owned.pixipix-build-")
+    assert intercepted[0][1] == output
 
     assert _artifact_bytes(output) == original
+    assert list(tmp_path.glob(".owned.pixipix-build-*")) == []
     assert list(tmp_path.glob(".owned.pixipix-backup-*")) == []

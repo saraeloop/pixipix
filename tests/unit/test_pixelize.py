@@ -1,3 +1,5 @@
+# mypy: disable-error-code="attr-defined"
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -6,9 +8,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import pixipix.pipeline.input as pipeline_input
+import pixipix.stages.extract.analysis as extract_analysis
+import pixipix.stages.extract.execution as extract_execution
 import pixipix.stages.pixelize.execution as pixelize_execution
 import pixipix.stages.pixelize.metadata as pixelize_metadata
 import pixipix.stages.pixelize.planning as pixelize_planning
+import pixipix.stages.scale.execution as scale_execution
 from pixipix.config import LoadedConfig, PixelizeConfig, load_config
 from pixipix.errors import ConfigurationError, ProcessingError, ResourcePolicyError
 from pixipix.models import Dimensions, PixelizeStageMetadata, UInt8Image
@@ -119,15 +125,34 @@ def test_pad_transparent_uses_pixelize_module_numpy_binding(
         raise PixelizePadReached("pixelize module np.pad reached")
 
     global_pad = np.pad
-    _patch_pixelize_numpy(monkeypatch, pad=mark_pad)
+    global_zeros = np.zeros
+    neighboring_numpy = (
+        scale_execution.np,
+        extract_analysis.np,
+        extract_execution.np,
+        pipeline_input.np,
+    )
+    with monkeypatch.context() as scoped:
+        _patch_pixelize_numpy(scoped, pad=mark_pad)
 
-    with pytest.raises(PixelizePadReached, match=r"pixelize module np\.pad reached") as raised:
-        prepare_cell_grid(pixels, 2, "pad-transparent", "frame")
+        with pytest.raises(PixelizePadReached, match=r"pixelize module np\.pad reached") as raised:
+            prepare_cell_grid(pixels, 2, "pad-transparent", "frame")
 
-    traceback_names = tuple(entry.name for entry in raised.traceback)
-    assert "prepare_cell_grid" in traceback_names
-    assert traceback_names[-1] == "mark_pad"
+        traceback_names = tuple(entry.name for entry in raised.traceback)
+        assert "prepare_cell_grid" in traceback_names
+        assert traceback_names[-1] == "mark_pad"
+        assert (
+            scale_execution.np,
+            extract_analysis.np,
+            extract_execution.np,
+            pipeline_input.np,
+        ) == neighboring_numpy
+        assert np.pad is global_pad
+        assert np.zeros is global_zeros
+
+    assert pixelize_execution.np is np
     assert np.pad is global_pad
+    assert np.zeros is global_zeros
 
 
 @pytest.mark.parametrize(
@@ -195,18 +220,37 @@ def test_pixelize_grid_uses_execution_module_numpy_binding(
     def mark_zeros(*_args: object, **_kwargs: object) -> None:
         raise PixelizeZerosReached("pixelize execution np.zeros reached")
 
+    global_pad = np.pad
     global_zeros = np.zeros
-    _patch_pixelize_numpy(monkeypatch, zeros=mark_zeros)
+    neighboring_numpy = (
+        scale_execution.np,
+        extract_analysis.np,
+        extract_execution.np,
+        pipeline_input.np,
+    )
+    with monkeypatch.context() as scoped:
+        _patch_pixelize_numpy(scoped, zeros=mark_zeros)
 
-    with pytest.raises(
-        PixelizeZerosReached,
-        match=r"pixelize execution np\.zeros reached",
-    ) as raised:
-        pixelize_prepared_grid(pixels, 2, "center", "preserve", 128)
+        with pytest.raises(
+            PixelizeZerosReached,
+            match=r"pixelize execution np\.zeros reached",
+        ) as raised:
+            pixelize_prepared_grid(pixels, 2, "center", "preserve", 128)
 
-    traceback_names = tuple(entry.name for entry in raised.traceback)
-    assert "pixelize_prepared_grid" in traceback_names
-    assert traceback_names[-1] == "mark_zeros"
+        traceback_names = tuple(entry.name for entry in raised.traceback)
+        assert "pixelize_prepared_grid" in traceback_names
+        assert traceback_names[-1] == "mark_zeros"
+        assert (
+            scale_execution.np,
+            extract_analysis.np,
+            extract_execution.np,
+            pipeline_input.np,
+        ) == neighboring_numpy
+        assert np.pad is global_pad
+        assert np.zeros is global_zeros
+
+    assert pixelize_execution.np is np
+    assert np.pad is global_pad
     assert np.zeros is global_zeros
 
 
