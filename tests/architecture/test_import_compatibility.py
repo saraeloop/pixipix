@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import ast
+import copy
 import importlib
+import importlib.util
 import inspect
+import json
 import subprocess
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from types import MappingProxyType, ModuleType
-from typing import Literal
+from typing import Literal, cast
 
 import pytest
 
@@ -1881,3 +1885,1940 @@ def test_scale_facade_is_relative_grouped_and_definition_free() -> None:
         isinstance(node, (ast.Assign, ast.AnnAssign, ast.FunctionDef, ast.ClassDef))
         for node in tree.body
     )
+
+
+# M3.5 Slice 11: complete compatibility-facade and installed-manifest contract.
+CompatibilityExportKind = Literal["function", "class", "integer", "singleton"]
+CompatibilityAssertionRule = Literal[
+    "identity",
+    "value-exact-type-ast",
+]
+AllPosture = Literal["present-exact", "absent-by-design"]
+
+
+@dataclass(frozen=True, slots=True)
+class FacadeExportContract:
+    name: str
+    direct_owner: str
+    final_owner: str
+    kind: CompatibilityExportKind
+    rule: CompatibilityAssertionRule
+
+
+@dataclass(frozen=True, slots=True)
+class FacadeSurfaceContract:
+    module: str
+    source: str
+    package: str
+    exports: tuple[FacadeExportContract, ...]
+    named_non_exports: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FacadeCandidate:
+    module: str
+    exports: tuple[tuple[str, str], ...]
+    semantic_exports: tuple[ObservedFacadeExport, ...]
+    renamed_imports: tuple[str, ...]
+    wildcard_imports: tuple[str, ...]
+    owner_module_imports: tuple[str, ...]
+    unaliased_public_imports: tuple[str, ...]
+    public_functions: tuple[str, ...]
+    public_classes: tuple[str, ...]
+    public_assignments: tuple[str, ...]
+    all_present: bool
+    all_value: tuple[str, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompatibilityCandidate:
+    root_version_present: bool
+    root_all_present: bool
+    root_all_value: tuple[str, ...] | None
+    root_public_leaks: tuple[str, ...]
+    stages: FacadeCandidate
+    facades: tuple[FacadeCandidate, ...]
+    posture_claims: tuple[tuple[str, AllPosture], ...]
+    aggregate_claim: tuple[int, int, int]
+    underscore_claim: tuple[str, ...]
+    permanent_aliases: tuple[str, ...]
+    temporary_test_local: tuple[str, ...]
+    removable_test_local: tuple[str, ...]
+    runtime_failures: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedFacadeExport:
+    name: str
+    direct_owner: str
+    final_owner: str
+    kind: CompatibilityExportKind
+    rule: CompatibilityAssertionRule
+    assertion_result: bool
+
+
+def _export(
+    name: str,
+    direct_owner: str,
+    final_owner: str,
+    kind: CompatibilityExportKind,
+    rule: CompatibilityAssertionRule = "identity",
+) -> FacadeExportContract:
+    return FacadeExportContract(name, direct_owner, final_owner, kind, rule)
+
+
+EXPECTED_FACADE_SURFACES = (
+    FacadeSurfaceContract(
+        "pixipix.stages.io",
+        "src/pixipix/stages/io.py",
+        "pixipix.stages",
+        (
+            _export("InputStageFrame", "pixipix.pipeline.input", "pixipix.pipeline.input", "class"),
+            _export(
+                "LoadedStageInput", "pixipix.pipeline.input", "pixipix.pipeline.input", "class"
+            ),
+            _export(
+                "ValidatedStageFrame",
+                "pixipix.pipeline.input",
+                "pixipix.pipeline.input",
+                "class",
+            ),
+            _export(
+                "ValidatedStageInput",
+                "pixipix.pipeline.input",
+                "pixipix.pipeline.input",
+                "class",
+            ),
+            _export(
+                "decode_stage_input",
+                "pixipix.pipeline.input",
+                "pixipix.pipeline.input",
+                "function",
+            ),
+            _export(
+                "load_stage_input",
+                "pixipix.pipeline.input",
+                "pixipix.pipeline.input",
+                "function",
+            ),
+            _export(
+                "validate_stage_input",
+                "pixipix.pipeline.input",
+                "pixipix.pipeline.input",
+                "function",
+            ),
+            _export(
+                "OutputFrameImage",
+                "pixipix.pipeline.publication",
+                "pixipix.pipeline.publication",
+                "class",
+            ),
+            _export(
+                "_valid_owned_output",
+                "pixipix.pipeline.publication",
+                "pixipix.pipeline.publication",
+                "function",
+            ),
+            _export(
+                "publish_stage_output",
+                "pixipix.pipeline.publication",
+                "pixipix.pipeline.publication",
+                "function",
+            ),
+            _export(
+                "validate_stage_output_target",
+                "pixipix.pipeline.publication",
+                "pixipix.pipeline.publication",
+                "function",
+            ),
+        ),
+        ("Image", "write_json", "write_png"),
+    ),
+    FacadeSurfaceContract(
+        "pixipix.stages.extract",
+        "src/pixipix/stages/extract/__init__.py",
+        "pixipix.stages.extract",
+        (
+            _export(
+                "ComponentMap",
+                "pixipix.stages.extract.analysis",
+                "pixipix.stages.extract.analysis",
+                "class",
+            ),
+            _export(
+                "filter_components",
+                "pixipix.stages.extract.analysis",
+                "pixipix.stages.extract.analysis",
+                "function",
+            ),
+            _export(
+                "label_components",
+                "pixipix.stages.extract.analysis",
+                "pixipix.stages.extract.analysis",
+                "function",
+            ),
+            _export(
+                "order_components",
+                "pixipix.stages.extract.analysis",
+                "pixipix.stages.extract.analysis",
+                "function",
+            ),
+            _export(
+                "extract_source",
+                "pixipix.stages.extract.api",
+                "pixipix.stages.extract.api",
+                "function",
+            ),
+            _export(
+                "inspect_source",
+                "pixipix.stages.extract.api",
+                "pixipix.stages.extract.api",
+                "function",
+            ),
+            _export(
+                "project_extract_resources",
+                "pixipix.stages.extract.planning",
+                "pixipix.stages.extract.planning",
+                "function",
+            ),
+            _export(
+                "project_extracted_frames",
+                "pixipix.stages.extract.planning",
+                "pixipix.stages.extract.planning",
+                "function",
+            ),
+            _export(
+                "publish_extraction",
+                "pixipix.stages.extract.publication",
+                "pixipix.stages.extract.publication",
+                "function",
+            ),
+        ),
+        (
+            "Image",
+            "enforce_resource_policy",
+            "generate_foreground_mask",
+            "load_source",
+            "np",
+            "to_json_data",
+            "write_json",
+            "write_png",
+        ),
+    ),
+    FacadeSurfaceContract(
+        "pixipix.stages.scale",
+        "src/pixipix/stages/scale/__init__.py",
+        "pixipix.stages.scale",
+        (
+            _export(
+                "publish_scale",
+                "pixipix.stages.scale.api",
+                "pixipix.stages.scale.api",
+                "function",
+            ),
+            _export(
+                "ScaleRun",
+                "pixipix.stages.scale.execution",
+                "pixipix.stages.scale.execution",
+                "class",
+            ),
+            _export(
+                "premultiplied_box_resize",
+                "pixipix.stages.scale.execution",
+                "pixipix.stages.scale.execution",
+                "function",
+            ),
+            _export(
+                "scale_stage",
+                "pixipix.stages.scale.execution",
+                "pixipix.stages.scale.execution",
+                "function",
+            ),
+            _export(
+                "round_channel_half_away_from_zero",
+                "pixipix.stages.scale.geometry",
+                "pixipix.stages.scale.geometry",
+                "function",
+            ),
+            _export(
+                "round_half_away_from_zero",
+                "pixipix.stages.scale.geometry",
+                "pixipix.stages.scale.geometry",
+                "function",
+            ),
+            _export(
+                "transformed_dimension",
+                "pixipix.stages.scale.geometry",
+                "pixipix.stages.scale.geometry",
+                "function",
+            ),
+            _export(
+                "MAX_TRANSFORMED_PIXELS",
+                "pixipix.stages.scale.planning",
+                "pixipix.stages.scale.planning",
+                "integer",
+                "value-exact-type-ast",
+            ),
+            _export(
+                "ScaleStagePlan",
+                "pixipix.stages.scale.planning",
+                "pixipix.stages.scale.planning",
+                "class",
+            ),
+            _export(
+                "project_scale_resources",
+                "pixipix.stages.scale.planning",
+                "pixipix.stages.scale.planning",
+                "function",
+            ),
+            _export(
+                "project_scale_stage",
+                "pixipix.stages.scale.planning",
+                "pixipix.stages.scale.planning",
+                "function",
+            ),
+        ),
+        ("Image", "build_scale_metadata", "decode_stage_input", "np"),
+    ),
+    FacadeSurfaceContract(
+        "pixipix.stages.pixelize",
+        "src/pixipix/stages/pixelize/__init__.py",
+        "pixipix.stages.pixelize",
+        (
+            _export(
+                "publish_pixelize",
+                "pixipix.stages.pixelize.api",
+                "pixipix.stages.pixelize.api",
+                "function",
+            ),
+            _export(
+                "PixelizeRun",
+                "pixipix.stages.pixelize.execution",
+                "pixipix.stages.pixelize.execution",
+                "class",
+            ),
+            _export(
+                "PreparedCellGrid",
+                "pixipix.stages.pixelize.execution",
+                "pixipix.stages.pixelize.execution",
+                "class",
+            ),
+            _export(
+                "apply_alpha_policy",
+                "pixipix.stages.pixelize.execution",
+                "pixipix.stages.pixelize.execution",
+                "function",
+            ),
+            _export(
+                "pixelize_prepared_grid",
+                "pixipix.stages.pixelize.execution",
+                "pixipix.stages.pixelize.execution",
+                "function",
+            ),
+            _export(
+                "pixelize_stage",
+                "pixipix.stages.pixelize.execution",
+                "pixipix.stages.pixelize.execution",
+                "function",
+            ),
+            _export(
+                "prepare_cell_grid",
+                "pixipix.stages.pixelize.execution",
+                "pixipix.stages.pixelize.execution",
+                "function",
+            ),
+            _export(
+                "representative_pixel",
+                "pixipix.stages.pixelize.execution",
+                "pixipix.stages.pixelize.execution",
+                "function",
+            ),
+            _export(
+                "round_channel_half_away_from_zero",
+                "pixipix.stages.pixelize.execution",
+                "pixipix.stages.scale.geometry",
+                "function",
+            ),
+            _export(
+                "MAX_PREPARED_PIXELS",
+                "pixipix.stages.pixelize.planning",
+                "pixipix.stages.pixelize.planning",
+                "integer",
+                "value-exact-type-ast",
+            ),
+            _export(
+                "CellGridProjection",
+                "pixipix.stages.pixelize.planning",
+                "pixipix.stages.pixelize.planning",
+                "class",
+            ),
+            _export(
+                "PixelizeStagePlan",
+                "pixipix.stages.pixelize.planning",
+                "pixipix.stages.pixelize.planning",
+                "class",
+            ),
+            _export(
+                "project_cell_grid",
+                "pixipix.stages.pixelize.planning",
+                "pixipix.stages.pixelize.planning",
+                "function",
+            ),
+            _export(
+                "project_pixelize_resources",
+                "pixipix.stages.pixelize.planning",
+                "pixipix.stages.pixelize.planning",
+                "function",
+            ),
+            _export(
+                "project_pixelize_stage",
+                "pixipix.stages.pixelize.planning",
+                "pixipix.stages.pixelize.planning",
+                "function",
+            ),
+        ),
+        ("Image", "build_pixelize_metadata", "decode_stage_input", "np"),
+    ),
+    FacadeSurfaceContract(
+        "pixipix.stages.align",
+        "src/pixipix/stages/align/__init__.py",
+        "pixipix.stages.align",
+        (
+            _export(
+                "publish_align",
+                "pixipix.stages.align.api",
+                "pixipix.stages.align.api",
+                "function",
+            ),
+            _export(
+                "AlignmentRun",
+                "pixipix.stages.align.execution",
+                "pixipix.stages.align.execution",
+                "class",
+            ),
+            _export(
+                "align_stage",
+                "pixipix.stages.align.execution",
+                "pixipix.stages.align.execution",
+                "function",
+            ),
+            _export(
+                "compose_aligned_canvas",
+                "pixipix.stages.align.execution",
+                "pixipix.stages.align.execution",
+                "function",
+            ),
+            _export(
+                "EMPTY_RECTANGLE",
+                "pixipix.stages.align.geometry",
+                "pixipix.stages.align.geometry",
+                "singleton",
+                "identity",
+            ),
+            _export(
+                "calculate_alignment_frame",
+                "pixipix.stages.align.geometry",
+                "pixipix.stages.align.geometry",
+                "function",
+            ),
+            _export(
+                "mathematical_floor_center",
+                "pixipix.stages.align.geometry",
+                "pixipix.stages.align.geometry",
+                "function",
+            ),
+            _export(
+                "AlignmentStagePlan",
+                "pixipix.stages.align.planning",
+                "pixipix.stages.align.planning",
+                "class",
+            ),
+            _export(
+                "clipping_finding",
+                "pixipix.stages.align.planning",
+                "pixipix.stages.align.planning",
+                "function",
+            ),
+            _export(
+                "project_align_resources",
+                "pixipix.stages.align.planning",
+                "pixipix.stages.align.planning",
+                "function",
+            ),
+            _export(
+                "project_align_stage",
+                "pixipix.stages.align.planning",
+                "pixipix.stages.align.planning",
+                "function",
+            ),
+        ),
+        (
+            "decode_stage_input",
+            "enforce_resource_policy",
+            "publish_stage_output",
+            "validate_stage_input",
+        ),
+    ),
+)
+
+EXPECTED_ROOT_BINDINGS = ("__version__",)
+EXPECTED_ROOT_NON_EXPORTS = ("version",)
+EXPECTED_STAGES_NON_EXPORTS = (
+    "publish_align",
+    "publish_extraction",
+    "publish_pixelize",
+    "publish_scale",
+)
+EXPECTED_POSTURES: tuple[tuple[str, AllPosture], ...] = (
+    ("pixipix", "present-exact"),
+    ("pixipix.stages", "absent-by-design"),
+    ("pixipix.stages.align", "absent-by-design"),
+    ("pixipix.stages.extract", "absent-by-design"),
+    ("pixipix.stages.io", "absent-by-design"),
+    ("pixipix.stages.pixelize", "absent-by-design"),
+    ("pixipix.stages.scale", "absent-by-design"),
+)
+EXPECTED_INTENTIONAL_UNDERSCORES = ("pixipix.stages.io._valid_owned_output",)
+PERMANENT_COMPATIBILITY = "permanent production compatibility"
+
+# These bounded semantic-role and owner registries are deliberately independent
+# from EXPECTED_FACADE_SURFACES. They identify where observation is permitted;
+# they do not provide expected per-export owners, kinds, rules, or results.
+IDENTITY_SINGLETON_SYMBOLS = frozenset({"pixipix.stages.align.EMPTY_RECTANGLE"})
+IMMUTABLE_VALUE_SYMBOLS = frozenset(
+    {
+        "pixipix.stages.pixelize.MAX_PREPARED_PIXELS",
+        "pixipix.stages.scale.MAX_TRANSFORMED_PIXELS",
+    }
+)
+PRODUCTION_OWNER_MODULES = (
+    "pixipix.pipeline.input",
+    "pixipix.pipeline.publication",
+    "pixipix.stages.align.api",
+    "pixipix.stages.align.execution",
+    "pixipix.stages.align.geometry",
+    "pixipix.stages.align.planning",
+    "pixipix.stages.extract.analysis",
+    "pixipix.stages.extract.api",
+    "pixipix.stages.extract.planning",
+    "pixipix.stages.extract.publication",
+    "pixipix.stages.pixelize.api",
+    "pixipix.stages.pixelize.execution",
+    "pixipix.stages.pixelize.planning",
+    "pixipix.stages.scale.api",
+    "pixipix.stages.scale.execution",
+    "pixipix.stages.scale.geometry",
+    "pixipix.stages.scale.planning",
+)
+
+
+def _assigned_names(node: ast.Assign | ast.AnnAssign) -> tuple[str, ...]:
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    return tuple(target.id for target in targets if isinstance(target, ast.Name))
+
+
+def _literal_all_value(node: ast.Assign | ast.AnnAssign) -> tuple[str, ...] | None:
+    value = node.value
+    if value is None:
+        return None
+    try:
+        literal = ast.literal_eval(value)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(literal, list) or not all(isinstance(item, str) for item in literal):
+        return None
+    return tuple(literal)
+
+
+def _is_production_module(target: str) -> bool:
+    if not (target == "pixipix" or target.startswith("pixipix.")):
+        return False
+    try:
+        return importlib.util.find_spec(target) is not None
+    except (AttributeError, ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
+def _module_defines_name(module: ModuleType, name: str) -> bool:
+    source_name = getattr(module, "__file__", None)
+    if source_name is None:
+        return False
+    tree = ast.parse(Path(source_name).read_text(encoding="utf-8"), filename=source_name)
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                return True
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and name in _assigned_names(node):
+            return True
+    return False
+
+
+def _observed_kind(binding: str, value: object) -> CompatibilityExportKind:
+    if inspect.isfunction(value):
+        return "function"
+    if inspect.isclass(value):
+        return "class"
+    if binding in IMMUTABLE_VALUE_SYMBOLS:
+        if type(value) is not int:
+            raise AssertionError(
+                f"surface={binding.rsplit('.', 1)[0]} symbol={binding.rsplit('.', 1)[1]} "
+                f"actual kind={type(value).__name__} expected kind=integer "
+                "remediation=restore exact immutable integer"
+            )
+        return "integer"
+    if binding in IDENTITY_SINGLETON_SYMBOLS:
+        return "singleton"
+    raise AssertionError(
+        f"surface={binding.rsplit('.', 1)[0]} symbol={binding.rsplit('.', 1)[1]} "
+        f"actual kind={type(value).__name__} expected kind=unambiguous observed semantic role "
+        "remediation=classify the semantic role explicitly"
+    )
+
+
+def _observed_rule(kind: CompatibilityExportKind) -> CompatibilityAssertionRule:
+    if kind in {"function", "class", "singleton"}:
+        return "identity"
+    if kind == "integer":
+        return "value-exact-type-ast"
+    raise AssertionError(f"unhandled observed compatibility kind: {kind}")
+
+
+def _observed_final_owner(name: str, kind: CompatibilityExportKind, value: object) -> str:
+    matches: list[str] = []
+    for module_name in PRODUCTION_OWNER_MODULES:
+        module = importlib.import_module(module_name)
+        if not _module_defines_name(module, name) or not hasattr(module, name):
+            continue
+        owner_value = getattr(module, name)
+        if kind == "integer":
+            matches.extend(
+                [module_name]
+                if type(owner_value) is int and type(value) is int and owner_value == value
+                else []
+            )
+        elif owner_value is value:
+            matches.append(module_name)
+    if len(matches) != 1:
+        raise AssertionError(
+            f"symbol={name} actual final-owner matches={matches} expected matches=one "
+            "remediation=restore one canonical definition owner"
+        )
+    return matches[0]
+
+
+def _observe_export(
+    facade_module: str,
+    name: str,
+    direct_owner: str,
+) -> ObservedFacadeExport:
+    facade = importlib.import_module(facade_module)
+    direct = importlib.import_module(direct_owner)
+    facade_value = getattr(facade, name)
+    direct_value = getattr(direct, name)
+    binding = f"{facade_module}.{name}"
+    kind = _observed_kind(binding, facade_value)
+    rule = _observed_rule(kind)
+    final_owner = _observed_final_owner(name, kind, facade_value)
+    final_value = getattr(importlib.import_module(final_owner), name)
+    assertion_result = facade_value is direct_value and (
+        facade_value is final_value
+        if kind != "integer"
+        else type(facade_value) is int and type(final_value) is int and facade_value == final_value
+    )
+    return ObservedFacadeExport(
+        name=name,
+        direct_owner=direct_owner,
+        final_owner=final_owner,
+        kind=kind,
+        rule=rule,
+        assertion_result=assertion_result,
+    )
+
+
+def _scan_facade_source(
+    module: str,
+    source: Path,
+    package: str,
+) -> FacadeCandidate:
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    exports: list[tuple[str, str]] = []
+    renamed: list[str] = []
+    wildcards: list[str] = []
+    owner_modules: list[str] = []
+    unaliased: list[str] = []
+    public_functions: list[str] = []
+    public_classes: list[str] = []
+    public_assignments: list[str] = []
+    all_present = False
+    all_value: tuple[str, ...] | None = None
+
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            relative_name = "." * node.level + (node.module or "")
+            owner = (
+                importlib.util.resolve_name(relative_name, package) if node.level else node.module
+            )
+            assert owner is not None
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                rendered = f"{owner}.{alias.name} as {bound}"
+                absolute_target = f"{owner}.{alias.name}"
+                if alias.name == "*":
+                    wildcards.append(owner)
+                elif not bound.startswith("_") and _is_production_module(absolute_target):
+                    owner_modules.append(rendered)
+                elif alias.asname == alias.name:
+                    exports.append((alias.name, owner))
+                elif alias.asname is not None:
+                    renamed.append(rendered)
+                elif not bound.startswith("_"):
+                    unaliased.append(rendered)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".", 1)[0]
+                if not bound.startswith("_"):
+                    owner_modules.append(f"{alias.name} as {bound}")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not node.name.startswith("_"):
+                public_functions.append(node.name)
+        elif isinstance(node, ast.ClassDef):
+            if not node.name.startswith("_"):
+                public_classes.append(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            names = _assigned_names(node)
+            if "__all__" in names:
+                all_present = True
+                all_value = _literal_all_value(node)
+            public_assignments.extend(
+                name for name in names if not name.startswith("_") and name != "__all__"
+            )
+
+    return FacadeCandidate(
+        module=module,
+        exports=tuple(sorted(exports)),
+        semantic_exports=(),
+        renamed_imports=tuple(sorted(renamed)),
+        wildcard_imports=tuple(sorted(wildcards)),
+        owner_module_imports=tuple(sorted(owner_modules)),
+        unaliased_public_imports=tuple(sorted(unaliased)),
+        public_functions=tuple(sorted(public_functions)),
+        public_classes=tuple(sorted(public_classes)),
+        public_assignments=tuple(sorted(public_assignments)),
+        all_present=all_present,
+        all_value=all_value,
+    )
+
+
+def _root_contract_state() -> tuple[bool, bool, tuple[str, ...] | None, tuple[str, ...]]:
+    source = PROJECT_ROOT / "src" / "pixipix" / "__init__.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    version_present = False
+    all_present = False
+    all_value: tuple[str, ...] | None = None
+    public_leaks: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                allowed_metadata_helper = (
+                    node.level == 0
+                    and node.module == "importlib.metadata"
+                    and alias.name == "version"
+                    and bound == "version"
+                )
+                if not allowed_metadata_helper and not bound.startswith("_"):
+                    public_leaks.append(f"import {node.module}.{alias.name} as {bound}")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".", 1)[0]
+                if not bound.startswith("_"):
+                    public_leaks.append(f"import {alias.name} as {bound}")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if not node.name.startswith("_"):
+                public_leaks.append(f"definition {node.name}")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            names = _assigned_names(node)
+            version_present |= "__version__" in names
+            if "__all__" in names:
+                all_present = True
+                all_value = _literal_all_value(node)
+            public_leaks.extend(f"assignment {name}" for name in names if not name.startswith("_"))
+    return version_present, all_present, all_value, tuple(sorted(public_leaks))
+
+
+def _observed_postures(
+    root_all_present: bool,
+    stages: FacadeCandidate,
+    facades: tuple[FacadeCandidate, ...],
+) -> tuple[tuple[str, AllPosture], ...]:
+    entries: list[tuple[str, AllPosture]] = [
+        ("pixipix", "present-exact" if root_all_present else "absent-by-design"),
+        (
+            "pixipix.stages",
+            "present-exact" if stages.all_present else "absent-by-design",
+        ),
+    ]
+    entries.extend(
+        (
+            facade.module,
+            "present-exact" if facade.all_present else "absent-by-design",
+        )
+        for facade in facades
+    )
+    return tuple(sorted(entries))
+
+
+def derive_compatibility_candidate() -> CompatibilityCandidate:
+    root_version, root_all_present, root_all_value, root_public_leaks = _root_contract_state()
+    stages = _scan_facade_source(
+        "pixipix.stages",
+        PROJECT_ROOT / "src" / "pixipix" / "stages" / "__init__.py",
+        "pixipix.stages",
+    )
+    scanned_facades = tuple(
+        _scan_facade_source(
+            surface.module,
+            PROJECT_ROOT / surface.source,
+            surface.package,
+        )
+        for surface in EXPECTED_FACADE_SURFACES
+    )
+    facades = tuple(
+        replace(
+            facade,
+            semantic_exports=tuple(
+                _observe_export(facade.module, name, direct_owner)
+                for name, direct_owner in facade.exports
+            ),
+        )
+        for facade in scanned_facades
+    )
+    aliases = tuple(
+        sorted(
+            f"{facade.module}.{name}"
+            for facade in facades
+            for name, _direct_owner in facade.exports
+        )
+    )
+    deliberate = sum(len(facade.exports) for facade in facades)
+    public = sum(not name.startswith("_") for facade in facades for name, _owner in facade.exports)
+    underscores = tuple(
+        sorted(
+            f"{facade.module}.{name}"
+            for facade in facades
+            for name, _owner in facade.exports
+            if name.startswith("_")
+        )
+    )
+    return CompatibilityCandidate(
+        root_version_present=root_version,
+        root_all_present=root_all_present,
+        root_all_value=root_all_value,
+        root_public_leaks=root_public_leaks,
+        stages=stages,
+        facades=facades,
+        posture_claims=_observed_postures(root_all_present, stages, facades),
+        aggregate_claim=(deliberate, public, len(underscores)),
+        underscore_claim=underscores,
+        permanent_aliases=aliases,
+        temporary_test_local=(),
+        removable_test_local=(),
+    )
+
+
+def _expected_aliases(
+    surfaces: tuple[FacadeSurfaceContract, ...] | None = None,
+) -> tuple[str, ...]:
+    expected_surfaces = EXPECTED_FACADE_SURFACES if surfaces is None else surfaces
+    return tuple(
+        sorted(
+            f"{surface.module}.{export.name}"
+            for surface in expected_surfaces
+            for export in surface.exports
+        )
+    )
+
+
+def _runtime_export_errors(candidate: CompatibilityCandidate) -> list[str]:
+    errors: list[str] = []
+    for facade in candidate.facades:
+        for export in facade.semantic_exports:
+            if not export.assertion_result:
+                errors.append(
+                    f"surface={facade.module} symbol={export.name} actual assertion=false "
+                    "expected assertion=true remediation=restore canonical direct/final identity"
+                )
+    root = importlib.import_module("pixipix")
+    root_version = getattr(root, "__version__", None)
+    if type(root_version) is not str or root_version != distribution_version("pixipix"):
+        errors.append(
+            "surface=pixipix symbol=__version__ actual value/type differs "
+            "expected value=distribution metadata str remediation=restore root binding"
+        )
+    return errors
+
+
+def validate_compatibility_candidate(
+    candidate: CompatibilityCandidate,
+    *,
+    expected_surfaces: tuple[FacadeSurfaceContract, ...] | None = None,
+    expected_postures: tuple[tuple[str, AllPosture], ...] | None = None,
+) -> None:
+    errors: list[str] = []
+    expected_contract = EXPECTED_FACADE_SURFACES if expected_surfaces is None else expected_surfaces
+    expected_posture_contract = (
+        EXPECTED_POSTURES if expected_postures is None else expected_postures
+    )
+    expected_by_module = {surface.module: surface for surface in expected_contract}
+    candidate_surfaces = {surface.module: surface for surface in candidate.facades}
+    if frozenset(candidate_surfaces) != frozenset(expected_by_module):
+        errors.append(
+            "surface=facades symbol=set actual form="
+            f"{sorted(candidate_surfaces)} expected form={sorted(expected_by_module)} "
+            "remediation=restore the five audited facades"
+        )
+    for module in sorted(frozenset(candidate_surfaces) | frozenset(expected_by_module)):
+        actual = candidate_surfaces.get(module)
+        expected = expected_by_module.get(module)
+        if actual is None or expected is None:
+            continue
+        expected_exports = tuple(
+            sorted((export.name, export.direct_owner) for export in expected.exports)
+        )
+        if actual.exports != expected_exports:
+            errors.append(
+                f"surface={module} symbol=exports actual form={actual.exports} "
+                f"expected form={expected_exports} remediation=restore exact same-name imports"
+            )
+        expected_semantics = {export.name: export for export in expected.exports}
+        observed_semantics = {export.name: export for export in actual.semantic_exports}
+        if frozenset(observed_semantics) != frozenset(expected_semantics):
+            errors.append(
+                f"surface={module} symbol=semantic-set actual form={sorted(observed_semantics)} "
+                f"expected form={sorted(expected_semantics)} "
+                "remediation=derive semantics for every observed export"
+            )
+        for name in sorted(frozenset(observed_semantics) & frozenset(expected_semantics)):
+            observed = observed_semantics[name]
+            expected_export = expected_semantics[name]
+            for field in ("direct_owner", "final_owner", "kind", "rule"):
+                observed_value = getattr(observed, field)
+                expected_value = getattr(expected_export, field)
+                if observed_value != expected_value:
+                    errors.append(
+                        f"surface={module} symbol={name} field={field} "
+                        f"actual={observed_value} expected={expected_value} "
+                        "remediation=restore independently observed compatibility semantics"
+                    )
+        forbidden_forms = (
+            ("renamed import", actual.renamed_imports),
+            ("wildcard import", actual.wildcard_imports),
+            ("owner-module import", actual.owner_module_imports),
+            ("unaliased public import", actual.unaliased_public_imports),
+            ("public function", actual.public_functions),
+            ("public class", actual.public_classes),
+            ("public assignment", actual.public_assignments),
+        )
+        for form, values in forbidden_forms:
+            if values:
+                errors.append(
+                    f"surface={module} symbol={values[0]} actual form={form} "
+                    "expected form=explicit same-name re-export "
+                    "remediation=remove the facade-source leak"
+                )
+        if actual.all_present:
+            errors.append(
+                f"surface={module} symbol=__all__ actual form=present "
+                "expected form=absent-by-design remediation=remove stage-facade __all__"
+            )
+        export_names = {name for name, _owner in actual.exports}
+        for name in expected.named_non_exports:
+            if name in export_names:
+                errors.append(
+                    f"surface={module} symbol={name} actual classification=deliberate export "
+                    "expected classification=bounded non-export remediation=remove explicit export"
+                )
+
+    if candidate.stages.exports:
+        errors.append(
+            "surface=pixipix.stages symbol=exports actual form="
+            f"{candidate.stages.exports} expected form=empty "
+            "remediation=remove explicit namespace exports"
+        )
+    if candidate.stages.all_present:
+        errors.append(
+            "surface=pixipix.stages symbol=__all__ actual form=present "
+            "expected form=absent-by-design remediation=remove namespace __all__"
+        )
+    if not candidate.root_version_present:
+        errors.append(
+            "surface=pixipix symbol=__version__ actual form=missing "
+            "expected form=documented root binding remediation=restore root version"
+        )
+    if candidate.root_public_leaks:
+        errors.append(
+            "surface=pixipix symbol=public-source-binding actual form="
+            f"{candidate.root_public_leaks} expected form=metadata helper plus documented root "
+            "binding remediation=remove undocumented root binding"
+        )
+    if not candidate.root_all_present or candidate.root_all_value != ("__version__",):
+        errors.append(
+            "surface=pixipix symbol=__all__ actual form="
+            f"{candidate.root_all_value if candidate.root_all_present else 'missing'} "
+            "expected form=['__version__'] remediation=restore exact root __all__"
+        )
+    if candidate.posture_claims != expected_posture_contract:
+        errors.append(
+            "surface=all symbol=__all__ actual classification="
+            f"{candidate.posture_claims} expected classification={expected_posture_contract} "
+            "remediation=restore dual posture"
+        )
+    if candidate.aggregate_claim != (57, 56, 1):
+        errors.append(
+            "surface=facades symbol=aggregate actual form="
+            f"{candidate.aggregate_claim} expected form=(57, 56, 1) "
+            "remediation=restore locked facade census"
+        )
+    if candidate.underscore_claim != EXPECTED_INTENTIONAL_UNDERSCORES:
+        errors.append(
+            "surface=facades symbol=underscore actual form="
+            f"{candidate.underscore_claim} expected form={EXPECTED_INTENTIONAL_UNDERSCORES} "
+            "remediation=restore intentional underscore export"
+        )
+    expected_aliases = _expected_aliases(expected_contract)
+    if candidate.permanent_aliases != expected_aliases:
+        errors.append(
+            "surface=facades symbol=classifications actual classification="
+            f"{candidate.permanent_aliases} expected classification={expected_aliases} "
+            "remediation=classify every production alias as permanent"
+        )
+    if candidate.temporary_test_local:
+        errors.append(
+            "surface=facades symbol=temporary actual classification="
+            f"{candidate.temporary_test_local} expected classification=empty "
+            "remediation=remove unexpected temporary scaffolding"
+        )
+    if candidate.removable_test_local:
+        errors.append(
+            "surface=facades symbol=removable actual classification="
+            f"{candidate.removable_test_local} expected classification=empty "
+            "remediation=production aliases are not removable"
+        )
+    for failure in candidate.runtime_failures:
+        errors.append(
+            f"surface=facades symbol={failure} actual form=runtime replacement "
+            "expected form=canonical identity remediation=restore direct binding"
+        )
+    observed_singletons = frozenset(
+        f"{facade.module}.{export.name}"
+        for facade in candidate.facades
+        for export in facade.semantic_exports
+        if export.kind == "singleton"
+    )
+    observed_immutables = frozenset(
+        f"{facade.module}.{export.name}"
+        for facade in candidate.facades
+        for export in facade.semantic_exports
+        if export.kind == "integer"
+    )
+    if observed_singletons != IDENTITY_SINGLETON_SYMBOLS:
+        errors.append(
+            f"surface=facades symbol=singleton-registry actual={sorted(observed_singletons)} "
+            f"expected={sorted(IDENTITY_SINGLETON_SYMBOLS)} "
+            "remediation=restore exact singleton coverage"
+        )
+    if observed_immutables != IMMUTABLE_VALUE_SYMBOLS:
+        errors.append(
+            f"surface=facades symbol=immutable-registry actual={sorted(observed_immutables)} "
+            f"expected={sorted(IMMUTABLE_VALUE_SYMBOLS)} "
+            "remediation=restore exact immutable coverage"
+        )
+    errors.extend(_runtime_export_errors(candidate))
+    if errors:
+        raise AssertionError("\n".join(sorted(errors)))
+
+
+def _manifest_surface(
+    surface: FacadeSurfaceContract,
+    candidate: FacadeCandidate,
+) -> dict[str, object]:
+    exports = [
+        {
+            "assertion_rule": export.rule,
+            "canonical_direct_owner": export.direct_owner,
+            "canonical_final_owner": export.final_owner,
+            "compatibility_classification": PERMANENT_COMPATIBILITY,
+            "name": export.name,
+            "process_local_assertion": export.assertion_result,
+            "symbol_kind": export.kind,
+        }
+        for export in sorted(candidate.semantic_exports, key=lambda item: item.name)
+    ]
+    return {
+        "__all__": {"posture": "absent-by-design", "value": None},
+        "bounded_named_non_exports": {
+            name: name not in {export_name for export_name, _owner in candidate.exports}
+            for name in sorted(surface.named_non_exports)
+        },
+        "documented_root_bindings": [],
+        "explicit_same_name_exports": exports,
+        "intentional_underscore_exports": [
+            export.name
+            for export in sorted(candidate.semantic_exports, key=lambda item: item.name)
+            if export.name.startswith("_")
+        ],
+        "surface": surface.module,
+    }
+
+
+def build_checkout_compatibility_manifest() -> dict[str, object]:
+    candidate = derive_compatibility_candidate()
+    validate_compatibility_candidate(candidate)
+    candidate_by_module = {surface.module: surface for surface in candidate.facades}
+    root = importlib.import_module("pixipix")
+    root_assertion = type(root.__version__) is str and root.__version__ == distribution_version(
+        "pixipix"
+    )
+    root_kind = "string" if type(root.__version__) is str else type(root.__version__).__name__
+    root_rule = "value-exact-type-metadata" if root_kind == "string" else "unclassified"
+    surfaces: list[dict[str, object]] = [
+        {
+            "__all__": {"posture": "present-exact", "value": ["__version__"]},
+            "bounded_named_non_exports": {"version": True},
+            "documented_root_bindings": [
+                {
+                    "assertion_rule": root_rule,
+                    "canonical_direct_owner": "distribution metadata",
+                    "canonical_final_owner": "pixipix",
+                    "compatibility_classification": PERMANENT_COMPATIBILITY,
+                    "name": "__version__",
+                    "process_local_assertion": root_assertion,
+                    "symbol_kind": root_kind,
+                }
+            ],
+            "explicit_same_name_exports": [],
+            "intentional_underscore_exports": [],
+            "surface": "pixipix",
+        },
+        {
+            "__all__": {"posture": "absent-by-design", "value": None},
+            "bounded_named_non_exports": {
+                name: True for name in sorted(EXPECTED_STAGES_NON_EXPORTS)
+            },
+            "documented_root_bindings": [],
+            "explicit_same_name_exports": [],
+            "intentional_underscore_exports": [],
+            "surface": "pixipix.stages",
+        },
+    ]
+    surfaces.extend(
+        _manifest_surface(surface, candidate_by_module[surface.module])
+        for surface in sorted(EXPECTED_FACADE_SURFACES, key=lambda item: item.module)
+    )
+    return {"surfaces": surfaces}
+
+
+def compatibility_contract_payload(
+    expected_surfaces: tuple[FacadeSurfaceContract, ...] | None = None,
+    expected_postures: tuple[tuple[str, AllPosture], ...] | None = None,
+) -> dict[str, object]:
+    surfaces = EXPECTED_FACADE_SURFACES if expected_surfaces is None else expected_surfaces
+    postures = EXPECTED_POSTURES if expected_postures is None else expected_postures
+    return {
+        "facades": [
+            {
+                "module": surface.module,
+                "named_non_exports": list(sorted(surface.named_non_exports)),
+                "package": surface.package,
+                "exports": [
+                    {
+                        "direct_owner": export.direct_owner,
+                        "final_owner": export.final_owner,
+                        "kind": export.kind,
+                        "name": export.name,
+                        "rule": export.rule,
+                    }
+                    for export in sorted(surface.exports, key=lambda item: item.name)
+                ],
+            }
+            for surface in sorted(surfaces, key=lambda item: item.module)
+        ],
+        "expected_postures": [list(entry) for entry in postures],
+        "identity_singletons": sorted(IDENTITY_SINGLETON_SYMBOLS),
+        "immutable_values": sorted(IMMUTABLE_VALUE_SYMBOLS),
+        "owner_modules": list(PRODUCTION_OWNER_MODULES),
+        "scanner_cases": [
+            {
+                "exports": [],
+                "owner_modules": [["analysis", "pixipix.stages.extract"]],
+                "package": "pixipix.stages.extract",
+                "source": "from . import analysis as analysis\n",
+            },
+            {
+                "exports": [],
+                "owner_modules": [["analysis", "pixipix.stages.extract"]],
+                "package": "pixipix.stages.extract",
+                "source": ("from pixipix.stages.extract import analysis as analysis\n"),
+            },
+            {
+                "exports": [["ComponentMap", "pixipix.stages.extract.analysis"]],
+                "owner_modules": [],
+                "package": "pixipix.stages.extract",
+                "source": "from .analysis import ComponentMap as ComponentMap\n",
+            },
+            {
+                "exports": [["ComponentMap", "pixipix.stages.extract.analysis"]],
+                "owner_modules": [],
+                "package": "pixipix.stages.extract",
+                "source": (
+                    "from pixipix.stages.extract.analysis import (\n"
+                    "    ComponentMap as ComponentMap,\n"
+                    ")\n"
+                ),
+            },
+            {
+                "exports": [["ComponentMap", "pixipix.stages.extract.analysis"]],
+                "owner_modules": [],
+                "package": "pixipix.stages.pixelize",
+                "source": "from ..extract.analysis import ComponentMap as ComponentMap\n",
+            },
+        ],
+        "stages_non_exports": list(sorted(EXPECTED_STAGES_NON_EXPORTS)),
+    }
+
+
+def installed_compatibility_manifest_program(
+    contract_payload: Mapping[str, object] | None = None,
+) -> str:
+    payload = json.dumps(
+        compatibility_contract_payload() if contract_payload is None else contract_payload,
+        sort_keys=True,
+    )
+    return f"""
+import ast
+import importlib
+import importlib.metadata
+import importlib.util
+import inspect
+import json
+import pathlib
+import sys
+
+contract = json.loads({payload!r})
+
+def module_source(module):
+    loaded = importlib.import_module(module)
+    source = pathlib.Path(loaded.__file__).resolve()
+    return loaded, ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+
+def is_production_module(target):
+    if not (target == "pixipix" or target.startswith("pixipix.")):
+        return False
+    try:
+        return importlib.util.find_spec(target) is not None
+    except (AttributeError, ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+def classified_imports(tree, package):
+    result = []
+    owner_modules = []
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.module == "__future__":
+            continue
+        relative = "." * node.level + (node.module or "")
+        owner = importlib.util.resolve_name(relative, package) if node.level else node.module
+        for alias in node.names:
+            bound = alias.asname or alias.name
+            target = owner + "." + alias.name
+            if not bound.startswith("_") and is_production_module(target):
+                owner_modules.append((alias.name, owner))
+            elif alias.asname == alias.name:
+                result.append((alias.name, owner))
+    return sorted(result), sorted(owner_modules)
+
+def same_name_exports(tree, package):
+    return classified_imports(tree, package)[0]
+
+def root_public_leaks(tree):
+    result = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                allowed = (
+                    node.level == 0
+                    and node.module == "importlib.metadata"
+                    and alias.name == "version"
+                    and bound == "version"
+                )
+                if not allowed and not bound.startswith("_"):
+                    result.append(bound)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".", 1)[0]
+                if not bound.startswith("_"):
+                    result.append(bound)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if not node.name.startswith("_"):
+                result.append(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            result.extend(
+                target.id
+                for target in targets
+                if isinstance(target, ast.Name) and not target.id.startswith("_")
+            )
+    return sorted(result)
+
+def assigned_names(node):
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    return [target.id for target in targets if isinstance(target, ast.Name)]
+
+def module_defines_name(tree, name):
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                return True
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and name in assigned_names(node):
+            return True
+    return False
+
+def observed_kind(binding, value):
+    if inspect.isfunction(value):
+        return "function"
+    if inspect.isclass(value):
+        return "class"
+    if binding in contract["immutable_values"]:
+        assert type(value) is int, (
+            "surface=" + binding.rsplit(".", 1)[0] + " symbol=" + binding.rsplit(".", 1)[1]
+            + " actual kind=" + type(value).__name__ + " expected kind=integer"
+        )
+        return "integer"
+    if binding in contract["identity_singletons"]:
+        return "singleton"
+    raise AssertionError(
+        "surface=" + binding.rsplit(".", 1)[0] + " symbol=" + binding.rsplit(".", 1)[1]
+        + " actual kind=" + type(value).__name__
+        + " expected kind=unambiguous observed semantic role"
+    )
+
+def observed_rule(kind):
+    if kind in {{"function", "class", "singleton"}}:
+        return "identity"
+    if kind == "integer":
+        return "value-exact-type-ast"
+    raise AssertionError("unhandled observed kind: " + kind)
+
+def observed_final_owner(name, kind, value):
+    matches = []
+    for owner_name in contract["owner_modules"]:
+        owner, owner_tree = module_source(owner_name)
+        if not module_defines_name(owner_tree, name) or not hasattr(owner, name):
+            continue
+        owner_value = getattr(owner, name)
+        if kind == "integer":
+            if type(owner_value) is int and type(value) is int and owner_value == value:
+                matches.append(owner_name)
+        elif owner_value is value:
+            matches.append(owner_name)
+    assert len(matches) == 1, (
+        "symbol=" + name + " actual final-owner matches=" + str(matches)
+        + " expected matches=one remediation=restore one canonical definition owner"
+    )
+    return matches[0]
+
+def require_equal(surface, symbol, field, actual, expected):
+    assert actual == expected, (
+        "surface=" + surface + " symbol=" + symbol + " field=" + field
+        + " actual=" + str(actual) + " expected=" + str(expected)
+        + " remediation=restore independently observed compatibility semantics"
+    )
+
+for scanner_case in contract["scanner_cases"]:
+    scanner_tree = ast.parse(scanner_case["source"])
+    scanner_exports, scanner_owner_modules = classified_imports(
+        scanner_tree, scanner_case["package"]
+    )
+    require_equal(
+        "installed-scanner",
+        "synthetic-import",
+        "exports",
+        scanner_exports,
+        [tuple(entry) for entry in scanner_case["exports"]],
+    )
+    require_equal(
+        "installed-scanner",
+        "synthetic-import",
+        "owner_modules",
+        scanner_owner_modules,
+        [tuple(entry) for entry in scanner_case["owner_modules"]],
+    )
+
+root, root_tree = module_source("pixipix")
+stages, stages_tree = module_source("pixipix.stages")
+root_assertion = (
+    type(root.__version__) is str
+    and root.__version__ == importlib.metadata.version("pixipix")
+)
+root_kind = "string" if type(root.__version__) is str else type(root.__version__).__name__
+root_rule = "value-exact-type-metadata" if root_kind == "string" else "unclassified"
+assert root_assertion
+assert root.__all__ == ["__version__"]
+assert root_public_leaks(root_tree) == []
+assert not any(
+    isinstance(node, (ast.Assign, ast.AnnAssign))
+    and any(isinstance(target, ast.Name) and target.id == "__all__"
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target]))
+    for node in stages_tree.body
+)
+assert same_name_exports(stages_tree, "pixipix.stages") == []
+assert classified_imports(stages_tree, "pixipix.stages")[1] == []
+observed_postures = [
+    ["pixipix", "present-exact"],
+    ["pixipix.stages", "absent-by-design"],
+]
+observed_aliases = []
+observed_singletons = []
+observed_immutables = []
+
+surfaces = [
+    {{
+        "__all__": {{"posture": "present-exact", "value": ["__version__"]}},
+        "bounded_named_non_exports": {{"version": True}},
+        "documented_root_bindings": [{{
+            "assertion_rule": root_rule,
+            "canonical_direct_owner": "distribution metadata",
+            "canonical_final_owner": "pixipix",
+            "compatibility_classification": {PERMANENT_COMPATIBILITY!r},
+            "name": "__version__",
+            "process_local_assertion": root_assertion,
+            "symbol_kind": root_kind,
+        }}],
+        "explicit_same_name_exports": [],
+        "intentional_underscore_exports": [],
+        "surface": "pixipix",
+    }},
+    {{
+        "__all__": {{"posture": "absent-by-design", "value": None}},
+        "bounded_named_non_exports": {{
+            name: True for name in contract["stages_non_exports"]
+        }},
+        "documented_root_bindings": [],
+        "explicit_same_name_exports": [],
+        "intentional_underscore_exports": [],
+        "surface": "pixipix.stages",
+    }},
+]
+
+for surface in contract["facades"]:
+    facade, tree = module_source(surface["module"])
+    actual_imports, owner_modules = classified_imports(tree, surface["package"])
+    assert not owner_modules, (
+        "surface=" + surface["module"] + " symbol=" + str(owner_modules[0])
+        + " actual form=owner-module import expected form=symbol re-export "
+        + "remediation=remove explicit owner-module exposure"
+    )
+    expected_imports = sorted(
+        (entry["name"], entry["direct_owner"]) for entry in surface["exports"]
+    )
+    assert actual_imports == expected_imports
+    assert not any(
+        isinstance(node, (ast.Assign, ast.AnnAssign))
+        and any(isinstance(target, ast.Name) and target.id == "__all__"
+                for target in (node.targets if isinstance(node, ast.Assign) else [node.target]))
+        for node in tree.body
+    )
+    observed_postures.append([surface["module"], "absent-by-design"])
+    rows = []
+    expected_by_name = {{entry["name"]: entry for entry in surface["exports"]}}
+    for name, direct_name in actual_imports:
+        entry = expected_by_name[name]
+        direct = importlib.import_module(direct_name)
+        facade_value = getattr(facade, name)
+        direct_value = getattr(direct, name)
+        kind = observed_kind(surface["module"] + "." + name, facade_value)
+        rule = observed_rule(kind)
+        binding = surface["module"] + "." + name
+        observed_aliases.append(binding)
+        if kind == "singleton":
+            observed_singletons.append(binding)
+        elif kind == "integer":
+            observed_immutables.append(binding)
+        final_owner = observed_final_owner(name, kind, facade_value)
+        final = importlib.import_module(final_owner)
+        final_value = getattr(final, name)
+        assertion_result = facade_value is direct_value and (
+            facade_value is final_value
+            if kind != "integer"
+            else type(facade_value) is int
+            and type(final_value) is int
+            and facade_value == final_value
+        )
+        require_equal(surface["module"], name, "direct_owner", direct_name, entry["direct_owner"])
+        require_equal(surface["module"], name, "final_owner", final_owner, entry["final_owner"])
+        require_equal(surface["module"], name, "kind", kind, entry["kind"])
+        require_equal(surface["module"], name, "rule", rule, entry["rule"])
+        require_equal(surface["module"], name, "assertion", assertion_result, True)
+        rows.append({{
+            "assertion_rule": rule,
+            "canonical_direct_owner": direct_name,
+            "canonical_final_owner": final_owner,
+            "compatibility_classification": {PERMANENT_COMPATIBILITY!r},
+            "name": name,
+            "process_local_assertion": assertion_result,
+            "symbol_kind": kind,
+        }})
+    export_names = {{name for name, _direct_owner in actual_imports}}
+    surfaces.append({{
+        "__all__": {{"posture": "absent-by-design", "value": None}},
+        "bounded_named_non_exports": {{
+            name: name not in export_names for name in surface["named_non_exports"]
+        }},
+        "documented_root_bindings": [],
+        "explicit_same_name_exports": rows,
+        "intentional_underscore_exports": sorted(
+            name for name in export_names if name.startswith("_")
+        ),
+        "surface": surface["module"],
+    }})
+
+require_equal(
+    "all",
+    "__all__",
+    "posture",
+    sorted(observed_postures),
+    sorted(contract["expected_postures"]),
+)
+expected_aliases = sorted(
+    surface["module"] + "." + entry["name"]
+    for surface in contract["facades"]
+    for entry in surface["exports"]
+)
+require_equal("facades", "aliases", "permanence", sorted(observed_aliases), expected_aliases)
+require_equal(
+    "facades",
+    "singletons",
+    "semantic-role registry",
+    sorted(observed_singletons),
+    sorted(contract["identity_singletons"]),
+)
+require_equal(
+    "facades",
+    "immutables",
+    "semantic-role registry",
+    sorted(observed_immutables),
+    sorted(contract["immutable_values"]),
+)
+
+loaded_module_paths = {{}}
+modules_without_files = []
+for module_name, loaded_module in sorted(sys.modules.items()):
+    if module_name != "pixipix" and not module_name.startswith("pixipix."):
+        continue
+    module_file = getattr(loaded_module, "__file__", None)
+    if module_file is None:
+        modules_without_files.append(module_name)
+    else:
+        loaded_module_paths[module_name] = str(pathlib.Path(module_file).resolve())
+
+print(json.dumps(
+    {{"manifest": {{"surfaces": sorted(surfaces, key=lambda row: row["surface"])}},
+      "module_paths": loaded_module_paths,
+      "modules_without_files": modules_without_files}},
+    sort_keys=True,
+))
+""".strip()
+
+
+def _replace_facade(
+    candidate: CompatibilityCandidate,
+    module: str,
+    replacement: FacadeCandidate,
+) -> CompatibilityCandidate:
+    return replace(
+        candidate,
+        facades=tuple(
+            replacement if facade.module == module else facade for facade in candidate.facades
+        ),
+    )
+
+
+def _mutated_compatibility_candidate(mutation: str) -> CompatibilityCandidate:
+    candidate = copy.deepcopy(derive_compatibility_candidate())
+    first = next(facade for facade in candidate.facades if facade.module == "pixipix.stages.io")
+    if mutation == "omit-export":
+        return _replace_facade(candidate, first.module, replace(first, exports=first.exports[1:]))
+    if mutation == "add-public-export":
+        return _replace_facade(
+            candidate,
+            first.module,
+            replace(
+                first,
+                exports=tuple(
+                    sorted((*first.exports, ("unexpected_export", "pixipix.pipeline.input")))
+                ),
+            ),
+        )
+    if mutation == "owner-substitution":
+        name, _owner = first.exports[0]
+        return _replace_facade(
+            candidate,
+            first.module,
+            replace(
+                first,
+                exports=((name, "pixipix.pipeline.artifacts"), *first.exports[1:]),
+            ),
+        )
+    if mutation == "wrapper-replacement":
+        return replace(candidate, runtime_failures=("pixipix.stages.io.InputStageFrame",))
+    if mutation == "wildcard-import":
+        return _replace_facade(
+            candidate,
+            first.module,
+            replace(first, wildcard_imports=("pixipix.pipeline.input",)),
+        )
+    if mutation == "owner-module-exposure":
+        return _replace_facade(
+            candidate,
+            first.module,
+            replace(
+                first,
+                owner_module_imports=("pixipix.pipeline.input as pipeline_input",),
+            ),
+        )
+    if mutation == "renamed-public-alias":
+        return _replace_facade(
+            candidate,
+            first.module,
+            replace(
+                first,
+                renamed_imports=("pixipix.pipeline.input.decode_stage_input as decode",),
+            ),
+        )
+    if mutation == "public-body":
+        return _replace_facade(
+            candidate,
+            first.module,
+            replace(first, public_functions=("compatibility_wrapper",)),
+        )
+    if mutation == "root-all-removed":
+        return replace(candidate, root_all_present=False, root_all_value=None)
+    if mutation == "root-all-corrupted":
+        return replace(candidate, root_all_value=("__version__", "version"))
+    if mutation == "stage-all-introduced":
+        return replace(
+            candidate,
+            stages=replace(candidate.stages, all_present=True, all_value=()),
+        )
+    if mutation == "root-posture-confused":
+        postures = tuple(
+            (surface, "absent-by-design" if surface == "pixipix" else posture)
+            for surface, posture in candidate.posture_claims
+        )
+        return replace(candidate, posture_claims=postures)
+    if mutation == "stage-posture-confused":
+        postures = tuple(
+            (
+                surface,
+                "present-exact" if surface == "pixipix.stages.io" else posture,
+            )
+            for surface, posture in candidate.posture_claims
+        )
+        return replace(candidate, posture_claims=postures)
+    if mutation == "aggregate-lower":
+        return replace(candidate, aggregate_claim=(56, 55, 1))
+    if mutation == "aggregate-higher":
+        return replace(candidate, aggregate_claim=(58, 57, 1))
+    if mutation == "underscore-omitted":
+        return replace(candidate, underscore_claim=())
+    if mutation == "underscore-added":
+        return replace(
+            candidate,
+            underscore_claim=(*EXPECTED_INTENTIONAL_UNDERSCORES, "pixipix.stages.io._extra"),
+        )
+    if mutation == "underscore-substituted":
+        return replace(candidate, underscore_claim=("pixipix.stages.io._replacement",))
+    if mutation == "production-removable":
+        return replace(
+            candidate,
+            removable_test_local=("pixipix.stages.io.InputStageFrame",),
+        )
+    raise AssertionError(f"unknown mutation: {mutation}")
+
+
+def test_complete_compatibility_candidate_matches_independent_contract() -> None:
+    candidate = derive_compatibility_candidate()
+
+    validate_compatibility_candidate(candidate)
+
+    manifest = build_checkout_compatibility_manifest()
+    surfaces = manifest["surfaces"]
+    assert isinstance(surfaces, list)
+    export_rows = sum(
+        len(surface["explicit_same_name_exports"])
+        for surface in surfaces
+        if isinstance(surface, dict)
+    )
+    assert export_rows == 57
+    assert candidate.aggregate_claim == (57, 56, 1)
+    assert candidate.underscore_claim == EXPECTED_INTENTIONAL_UNDERSCORES
+    assert len(candidate.permanent_aliases) == 57
+    assert candidate.temporary_test_local == ()
+    assert candidate.removable_test_local == ()
+
+
+def test_expected_compatibility_contract_is_independent_of_candidate() -> None:
+    expected_before = EXPECTED_FACADE_SURFACES
+    candidate = derive_compatibility_candidate()
+    mutated = replace(candidate, permanent_aliases=())
+
+    with pytest.raises(AssertionError):
+        validate_compatibility_candidate(mutated)
+
+    assert EXPECTED_FACADE_SURFACES is expected_before
+    assert len(_expected_aliases()) == 57
+    assert candidate.permanent_aliases != mutated.permanent_aliases
+    assert candidate.posture_claims is not EXPECTED_POSTURES
+    for observed, expected in zip(
+        candidate.facades,
+        EXPECTED_FACADE_SURFACES,
+        strict=True,
+    ):
+        assert id(observed.semantic_exports) != id(expected.exports)
+
+
+def _mutated_expected_semantic(
+    field: Literal["rule", "kind", "final_owner"],
+    value: str,
+) -> tuple[FacadeSurfaceContract, ...]:
+    surfaces: list[FacadeSurfaceContract] = []
+    for surface in EXPECTED_FACADE_SURFACES:
+        exports: list[FacadeExportContract] = []
+        for export in surface.exports:
+            if export.name == "MAX_TRANSFORMED_PIXELS":
+                if field == "rule":
+                    export = replace(export, rule=cast(CompatibilityAssertionRule, value))
+                elif field == "kind":
+                    export = replace(export, kind=cast(CompatibilityExportKind, value))
+                else:
+                    export = replace(export, final_owner=value)
+            exports.append(export)
+        surfaces.append(replace(surface, exports=tuple(exports)))
+    return tuple(surfaces)
+
+
+def _mutated_observed_semantic(
+    candidate: CompatibilityCandidate,
+    field: Literal["rule", "kind", "final_owner"],
+    value: str,
+) -> CompatibilityCandidate:
+    facades: list[FacadeCandidate] = []
+    for facade in candidate.facades:
+        semantics: list[ObservedFacadeExport] = []
+        for export in facade.semantic_exports:
+            if export.name == "MAX_TRANSFORMED_PIXELS":
+                if field == "rule":
+                    export = replace(export, rule=cast(CompatibilityAssertionRule, value))
+                elif field == "kind":
+                    export = replace(export, kind=cast(CompatibilityExportKind, value))
+                else:
+                    export = replace(export, final_owner=value)
+            semantics.append(export)
+        facades.append(replace(facade, semantic_exports=tuple(semantics)))
+    return replace(candidate, facades=tuple(facades))
+
+
+@pytest.mark.parametrize(
+    ("side", "field", "value", "diagnostic"),
+    [
+        ("expected", "rule", "identity", "field=rule"),
+        ("expected", "kind", "singleton", "field=kind"),
+        ("expected", "final_owner", "pixipix.stages.scale.execution", "field=final_owner"),
+        ("observed", "rule", "identity", "field=rule"),
+        ("observed", "kind", "singleton", "field=kind"),
+        ("observed", "final_owner", "pixipix.stages.scale.execution", "field=final_owner"),
+    ],
+)
+def test_semantic_contract_rejects_independent_inversion(
+    side: str,
+    field: Literal["rule", "kind", "final_owner"],
+    value: str,
+    diagnostic: str,
+) -> None:
+    candidate = derive_compatibility_candidate()
+    with pytest.raises(AssertionError, match=diagnostic):
+        if side == "expected":
+            validate_compatibility_candidate(
+                candidate,
+                expected_surfaces=_mutated_expected_semantic(field, value),
+            )
+        else:
+            validate_compatibility_candidate(_mutated_observed_semantic(candidate, field, value))
+
+
+def _mutated_installed_payload(field: str, value: str) -> dict[str, object]:
+    payload = copy.deepcopy(compatibility_contract_payload())
+    facades = cast(list[dict[str, object]], payload["facades"])
+    exports = next(
+        cast(list[dict[str, str]], surface["exports"])
+        for surface in facades
+        if surface["module"] == "pixipix.stages.scale"
+    )
+    target = next(export for export in exports if export["name"] == "MAX_TRANSFORMED_PIXELS")
+    target[field] = value
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rule", "identity"),
+        ("kind", "singleton"),
+        ("final_owner", "pixipix.stages.scale.execution"),
+    ],
+)
+def test_installed_manifest_rejects_false_semantic_payload(field: str, value: str) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            installed_compatibility_manifest_program(_mutated_installed_payload(field, value)),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert f"field={field}" in result.stderr
+
+
+def test_installed_manifest_rejects_false_posture_payload() -> None:
+    payload = copy.deepcopy(compatibility_contract_payload())
+    postures = cast(list[list[str]], payload["expected_postures"])
+    root_posture = next(entry for entry in postures if entry[0] == "pixipix")
+    root_posture[1] = "absent-by-design"
+
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", installed_compatibility_manifest_program(payload)],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "field=posture" in result.stderr
+
+
+def test_expected_posture_mutation_does_not_change_observed_posture() -> None:
+    candidate = derive_compatibility_candidate()
+    mutated_expected = tuple(
+        (
+            module,
+            "absent-by-design" if module == "pixipix" else posture,
+        )
+        for module, posture in EXPECTED_POSTURES
+    )
+
+    assert candidate.posture_claims == EXPECTED_POSTURES
+    with pytest.raises(AssertionError, match="restore dual posture"):
+        validate_compatibility_candidate(candidate, expected_postures=mutated_expected)
+    assert candidate.posture_claims == EXPECTED_POSTURES
+
+
+def test_permanent_candidates_are_derived_from_observed_exports() -> None:
+    candidate = derive_compatibility_candidate()
+    observed_aliases = tuple(
+        sorted(
+            f"{facade.module}.{name}"
+            for facade in candidate.facades
+            for name, _direct_owner in facade.exports
+        )
+    )
+
+    assert candidate.permanent_aliases == observed_aliases
+    assert candidate.permanent_aliases is not _expected_aliases()
+
+
+@pytest.mark.parametrize(
+    ("source", "owner_module", "export"),
+    [
+        ("from . import analysis as analysis\n", True, False),
+        (
+            "from pixipix.stages.extract import analysis as analysis\n",
+            True,
+            False,
+        ),
+        ("from .analysis import ComponentMap as ComponentMap\n", False, True),
+        (
+            "from pixipix.stages.extract.analysis import (\n    ComponentMap as ComponentMap,\n)\n",
+            False,
+            True,
+        ),
+        ("from ..extract.analysis import ComponentMap as ComponentMap\n", False, True),
+    ],
+)
+def test_facade_scanner_distinguishes_modules_from_symbols(
+    tmp_path: Path,
+    source: str,
+    owner_module: bool,
+    export: bool,
+) -> None:
+    facade_source = tmp_path / "facade.py"
+    facade_source.write_text(source, encoding="utf-8")
+
+    candidate = _scan_facade_source(
+        "pixipix.stages.extract.synthetic",
+        facade_source,
+        "pixipix.stages.extract",
+    )
+
+    assert bool(candidate.owner_module_imports) is owner_module
+    assert bool(candidate.exports) is export
+
+
+@pytest.mark.parametrize(
+    ("mutation", "diagnostic"),
+    [
+        ("omit-export", "expected form"),
+        ("add-public-export", "unexpected_export"),
+        ("owner-substitution", "pipeline.artifacts"),
+        ("wrapper-replacement", "runtime replacement"),
+        ("wildcard-import", "wildcard import"),
+        ("owner-module-exposure", "owner-module import"),
+        ("renamed-public-alias", "renamed import"),
+        ("public-body", "public function"),
+        ("root-all-removed", "surface=pixipix symbol=__all__"),
+        ("root-all-corrupted", "surface=pixipix symbol=__all__"),
+        ("stage-all-introduced", "surface=pixipix.stages symbol=__all__"),
+        ("root-posture-confused", "restore dual posture"),
+        ("stage-posture-confused", "restore dual posture"),
+        ("aggregate-lower", "actual form=(56, 55, 1)"),
+        ("aggregate-higher", "actual form=(58, 57, 1)"),
+        ("underscore-omitted", "symbol=underscore"),
+        ("underscore-added", "symbol=underscore"),
+        ("underscore-substituted", "symbol=underscore"),
+        ("production-removable", "production aliases are not removable"),
+    ],
+)
+def test_compatibility_contract_rejects_upstream_mutation(
+    mutation: str,
+    diagnostic: str,
+) -> None:
+    with pytest.raises(AssertionError) as raised:
+        validate_compatibility_candidate(_mutated_compatibility_candidate(mutation))
+
+    message = str(raised.value)
+    assert diagnostic in message
+    assert "surface=" in message
+    assert "symbol=" in message
+    assert "remediation=" in message
