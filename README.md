@@ -23,8 +23,8 @@ exported, procedurally generated, and AI-generated raster inputs are all process
 identically.
 
 > **Note:**
-> PixiPix is in active development. APIs and output contracts may change
-> during the alpha series.
+> PixiPix is actively developed. Future releases will expand the pipeline while
+> preserving documented stable behavior.
 
 ## Example
 
