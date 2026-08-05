@@ -23,7 +23,7 @@ information, or security-vulnerability details in a public issue. Report securit
 problems through [GitHub private vulnerability reporting][private-report]. If that
 form is unavailable, contact the maintainer through GitHub before sharing details.
 
-[private-report]: https://github.com/saraeloop/pixipix/security/advisories/new
+[private-report]: https://github.com/pixipixhq/pixipix/security/advisories/new
 
 ## Development setup
 

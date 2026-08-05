@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/saraeloop/pixipix/main/assets/brand/pixipix-logo.png" alt="PixiPix logo" width="400">
+  <img src="https://raw.githubusercontent.com/pixipixhq/pixipix/main/assets/brand/pixipix-logo.png" alt="PixiPix logo" width="400">
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/pypi/v/pixipix.svg" alt="PyPI version">
   <img src="https://img.shields.io/badge/python-3.12-18181b" alt="Python 3.12">
-  <img src="https://img.shields.io/github/stars/saraeloop/pixipix?style=social" alt="GitHub stars">
+  <img src="https://img.shields.io/github/stars/pixipixhq/pixipix?style=social" alt="GitHub stars">
   <img src="https://img.shields.io/badge/license-Apache%202.0-64748b" alt="Apache 2.0 license">
 </p>
 
@@ -566,4 +566,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor setup, project convention
 fixture requirements, and the full verification workflow.
 
 PixiPix is licensed under the
-[Apache License 2.0](https://github.com/saraeloop/pixipix/blob/main/LICENSE).
+[Apache License 2.0](https://github.com/pixipixhq/pixipix/blob/main/LICENSE).
