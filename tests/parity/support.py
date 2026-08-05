@@ -16,7 +16,37 @@ BASELINE_COMMIT = "aace7d9ac5fd4ba43c3315afd2f8eceb582d9020"
 MANIFEST_SCHEMA_VERSION = 1
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_PATH = Path(__file__).with_name("baseline") / "post-m3.json"
+RELEASE_BASELINE_PATH = Path(__file__).with_name("baseline") / "v0.1.0.json"
 API_PROBE_PATH = Path(__file__).with_name("capture_api.py")
+RELEASE_AUTHORITY_KIND = "stable-release-parity"
+RELEASE_PREPARATION_COMMIT = "bd9a45d2ea8bb22683f0eebaf30aaead5d83d1ca"
+RELEASE_VERSION = "0.1.0"
+HISTORICAL_BASELINE_SHA256 = "b8824ef1e0403ff52ab3db5ead6213731613c7ffd8ad80e686cc8939d6f791c7"
+RELEASE_FIELD_CLASSIFICATION = {
+    "artifactIdentity": [
+        "cases[].artifacts[].path",
+        "cases[].artifacts[].byteLength",
+        "cases[].artifacts[].sha256",
+        "cases[].stageTreeSha256",
+    ],
+    "behavioral": [
+        "cases[].* excluding artifacts, stageTreeSha256, and **.pixipixVersion",
+    ],
+    "releaseIdentity": [
+        "releaseVersion",
+        "cases[].**.pixipixVersion",
+    ],
+    "repositoryToolchainIdentity": [
+        "authorityKind",
+        "schemaVersion",
+        "releasePreparationCommit",
+        "historicalBaseline.*",
+        "fieldClassification",
+        "environment.*",
+        "fixtureSha256.*",
+        "uvLockSha256",
+    ],
+}
 CANONICAL_RUNTIME_FIELDS = (
     "implementation",
     "pythonVersion",
@@ -393,6 +423,52 @@ def load_baseline(path: Path = BASELINE_PATH) -> dict[str, object]:
         raise ParityError("post-M3 parity baseline records the wrong production commit")
     if manifest.get("baselineCleanWorktreeAttestation") is not True:
         raise ParityError("post-M3 parity baseline lacks a clean-worktree attestation")
+    return manifest
+
+
+def load_release_baseline(path: Path = RELEASE_BASELINE_PATH) -> dict[str, object]:
+    if not path.is_file():
+        raise ParityError("v0.1.0 parity authority is missing")
+    value = json.loads(path.read_bytes())
+    if not isinstance(value, dict):
+        raise ParityError("v0.1.0 parity authority must contain one JSON object")
+    manifest = cast(dict[str, object], value)
+    required = {
+        "authorityKind",
+        "cases",
+        "environment",
+        "fieldClassification",
+        "fixtureSha256",
+        "historicalBaseline",
+        "releasePreparationCommit",
+        "releaseVersion",
+        "schemaVersion",
+        "uvLockSha256",
+    }
+    if set(manifest) != required:
+        raise ParityError("v0.1.0 parity authority fields are incomplete or unexpected")
+    if manifest.get("authorityKind") != RELEASE_AUTHORITY_KIND:
+        raise ParityError("v0.1.0 parity authority has the wrong authority kind")
+    if manifest.get("schemaVersion") != MANIFEST_SCHEMA_VERSION:
+        raise ParityError("v0.1.0 parity authority schema is unsupported")
+    if manifest.get("releaseVersion") != RELEASE_VERSION:
+        raise ParityError("v0.1.0 parity authority records the wrong release version")
+    if manifest.get("releasePreparationCommit") != RELEASE_PREPARATION_COMMIT:
+        raise ParityError("v0.1.0 parity authority records the wrong preparation commit")
+    if manifest.get("historicalBaseline") != {
+        "path": BASELINE_PATH.name,
+        "sha256": HISTORICAL_BASELINE_SHA256,
+    }:
+        raise ParityError("v0.1.0 parity authority records the wrong historical provenance")
+    if manifest.get("fieldClassification") != RELEASE_FIELD_CLASSIFICATION:
+        raise ParityError("v0.1.0 parity authority field classification is incomplete")
+    if not isinstance(manifest.get("environment"), dict):
+        raise ParityError("v0.1.0 parity authority environment is missing or invalid")
+    if not isinstance(manifest.get("fixtureSha256"), dict):
+        raise ParityError("v0.1.0 parity authority fixture identity is missing or invalid")
+    if not isinstance(manifest.get("uvLockSha256"), str):
+        raise ParityError("v0.1.0 parity authority lock identity is missing or invalid")
+    _case_map(manifest)
     return manifest
 
 

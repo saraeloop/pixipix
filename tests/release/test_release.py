@@ -16,11 +16,15 @@ from scripts.release import (
     ReleaseValidationError,
     compare_wheels,
     inspect_distributions,
+    load_project_metadata,
     load_restricted_distribution_prefixes,
     validate_release_tag,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FIXTURE_DESCRIPTION = "Fixture deterministic sprite pipeline."
+FIXTURE_AUTHOR = "Fixture Author"
+FIXTURE_REPOSITORY_URL = "https://example.invalid/pixipix-fixture"
 
 
 def _write_project(root: Path, version: str = "0.1.0") -> Path:
@@ -32,8 +36,13 @@ def _write_project(root: Path, version: str = "0.1.0") -> Path:
                 "[project]",
                 'name = "pixipix"',
                 f'version = "{version}"',
+                f'description = "{FIXTURE_DESCRIPTION}"',
                 'requires-python = ">=3.12,<3.13"',
                 'license = { file = "LICENSE" }',
+                f'authors = [{{ name = "{FIXTURE_AUTHOR}" }}]',
+                "",
+                "[project.urls]",
+                f'Repository = "{FIXTURE_REPOSITORY_URL}"',
                 "",
             ]
         ),
@@ -47,16 +56,31 @@ def _write_project(root: Path, version: str = "0.1.0") -> Path:
     return pyproject
 
 
-def _core_metadata(version: str, *, requires_python: str = "<3.13,>=3.12") -> bytes:
-    return (
-        "Metadata-Version: 2.4\n"
-        "Name: pixipix\n"
-        f"Version: {version}\n"
-        "License: Apache License 2.0\n"
-        "License-File: LICENSE\n"
-        f"Requires-Python: {requires_python}\n"
-        "\n"
-    ).encode()
+def _core_metadata(
+    version: str,
+    *,
+    name: str = "pixipix",
+    summary: str | None = FIXTURE_DESCRIPTION,
+    author: str | None = FIXTURE_AUTHOR,
+    project_urls: tuple[str, ...] = (f"Repository, {FIXTURE_REPOSITORY_URL}",),
+    requires_python: str = "<3.13,>=3.12",
+    extra_headers: tuple[tuple[str, str], ...] = (),
+) -> bytes:
+    headers = [
+        "Metadata-Version: 2.4",
+        f"Name: {name}",
+        f"Version: {version}",
+        "License: Apache License 2.0",
+        "License-File: LICENSE",
+        f"Requires-Python: {requires_python}",
+    ]
+    if summary is not None:
+        headers.append(f"Summary: {summary}")
+    if author is not None:
+        headers.append(f"Author: {author}")
+    headers.extend(f"Project-URL: {value}" for value in project_urls)
+    headers.extend(f"{key}: {value}" for key, value in extra_headers)
+    return ("\n".join(headers) + "\n\n").encode()
 
 
 def _write_wheel(
@@ -223,6 +247,261 @@ def test_distribution_inspection_accepts_expected_metadata_and_contents(tmp_path
 
     assert wheel.suffix == ".whl"
     assert sdist.name.endswith(".tar.gz")
+
+
+def _metadata_override(
+    artifact: str, content: bytes
+) -> tuple[dict[str, bytes] | None, dict[str, bytes] | None]:
+    if artifact == "wheel":
+        return {"pixipix-0.1.0.dist-info/METADATA": content}, None
+    return None, {"PKG-INFO": content}
+
+
+def test_current_project_metadata_authority_is_exact() -> None:
+    metadata = load_project_metadata(PROJECT_ROOT / "pyproject.toml")
+
+    assert metadata.name == "pixipix"
+    assert metadata.version == "0.1.0"
+    assert metadata.description == (
+        "Deterministic sprite sheet pipeline: extract, scale, pixelize, and align "
+        "raster art into production-ready RGBA frames."
+    )
+    assert metadata.author == "Saraeloop"
+    assert metadata.repository_url == "https://github.com/pixipixhq/pixipix"
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    ("field", "content", "error"),
+    [
+        (
+            "Summary",
+            _core_metadata("0.1.0", summary="Incorrect adversarial description"),
+            "metadata Summary",
+        ),
+        (
+            "Author",
+            _core_metadata("0.1.0", author="Adversary"),
+            "metadata Author",
+        ),
+        (
+            "Repository",
+            _core_metadata(
+                "0.1.0",
+                project_urls=("Repository, https://example.invalid/adversary",),
+            ),
+            "metadata Project-URL Repository",
+        ),
+    ],
+)
+def test_distribution_inspection_rejects_governed_metadata_divergence(
+    tmp_path: Path, artifact: str, field: str, content: bytes, error: str
+) -> None:
+    wheel_extra, sdist_extra = _metadata_override(artifact, content)
+    project, dist = _distributions(tmp_path, wheel_extra=wheel_extra, sdist_extra=sdist_extra)
+
+    with pytest.raises(ReleaseValidationError, match=error):
+        inspect_distributions(dist, project)
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    ("field", "content", "error"),
+    [
+        ("Summary", _core_metadata("0.1.0", summary=None), "metadata Summary is missing"),
+        ("Author", _core_metadata("0.1.0", author=None), "metadata Author is missing"),
+        (
+            "Repository",
+            _core_metadata("0.1.0", project_urls=()),
+            "metadata Project-URL Repository is missing",
+        ),
+    ],
+)
+def test_distribution_inspection_rejects_missing_governed_metadata(
+    tmp_path: Path, artifact: str, field: str, content: bytes, error: str
+) -> None:
+    wheel_extra, sdist_extra = _metadata_override(artifact, content)
+    project, dist = _distributions(tmp_path, wheel_extra=wheel_extra, sdist_extra=sdist_extra)
+
+    with pytest.raises(ReleaseValidationError, match=error):
+        inspect_distributions(dist, project)
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    ("case", "content", "error"),
+    [
+        (
+            "duplicate Summary",
+            _core_metadata("0.1.0", extra_headers=(("Summary", FIXTURE_DESCRIPTION),)),
+            "metadata Summary occurs 2 times",
+        ),
+        (
+            "duplicate Author",
+            _core_metadata("0.1.0", extra_headers=(("Author", FIXTURE_AUTHOR),)),
+            "metadata Author occurs 2 times",
+        ),
+        (
+            "duplicate Repository",
+            _core_metadata(
+                "0.1.0",
+                project_urls=(
+                    f"Repository, {FIXTURE_REPOSITORY_URL}",
+                    f"Repository, {FIXTURE_REPOSITORY_URL}",
+                ),
+            ),
+            "metadata Project-URL Repository occurs 2 times",
+        ),
+        (
+            "conflicting Repository",
+            _core_metadata(
+                "0.1.0",
+                project_urls=(
+                    f"Repository, {FIXTURE_REPOSITORY_URL}",
+                    "Repository, https://example.invalid/adversary",
+                ),
+            ),
+            "metadata Project-URL Repository occurs 2 times",
+        ),
+        (
+            "malformed Project-URL",
+            _core_metadata("0.1.0", project_urls=("Repository without a URL",)),
+            "metadata Project-URL is malformed",
+        ),
+        (
+            "right URL under wrong label",
+            _core_metadata("0.1.0", project_urls=(f"Source, {FIXTURE_REPOSITORY_URL}",)),
+            "metadata Project-URL Repository is missing",
+        ),
+    ],
+)
+def test_distribution_inspection_rejects_ambiguous_governed_metadata(
+    tmp_path: Path, artifact: str, case: str, content: bytes, error: str
+) -> None:
+    wheel_extra, sdist_extra = _metadata_override(artifact, content)
+    project, dist = _distributions(tmp_path, wheel_extra=wheel_extra, sdist_extra=sdist_extra)
+
+    with pytest.raises(ReleaseValidationError, match=error):
+        inspect_distributions(dist, project)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Deterministic palette-lock sprite pipeline.",
+        "Fixture deterministic sprite pipeline without align.",
+        "Fixture deterministic sprite pipeline producing RGB frames.",
+    ],
+)
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+def test_distribution_inspection_rejects_inaccurate_summary_variants(
+    tmp_path: Path, artifact: str, summary: str
+) -> None:
+    content = _core_metadata("0.1.0", summary=summary)
+    wheel_extra, sdist_extra = _metadata_override(artifact, content)
+    project, dist = _distributions(tmp_path, wheel_extra=wheel_extra, sdist_extra=sdist_extra)
+
+    with pytest.raises(ReleaseValidationError, match="metadata Summary"):
+        inspect_distributions(dist, project)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        _core_metadata("0.1.0", summary="Shared wrong Summary"),
+        _core_metadata("0.1.0", author="Shared wrong Author"),
+        _core_metadata(
+            "0.1.0",
+            project_urls=("Repository, https://example.invalid/shared-wrong",),
+        ),
+    ],
+)
+def test_distribution_inspection_rejects_shared_wrong_metadata(
+    tmp_path: Path, content: bytes
+) -> None:
+    wheel_extra, _ = _metadata_override("wheel", content)
+    _, sdist_extra = _metadata_override("sdist", content)
+    project, dist = _distributions(tmp_path, wheel_extra=wheel_extra, sdist_extra=sdist_extra)
+
+    with pytest.raises(ReleaseValidationError, match="metadata"):
+        inspect_distributions(dist, project)
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+def test_distribution_inspection_preserves_unrelated_project_urls(
+    tmp_path: Path, artifact: str
+) -> None:
+    content = _core_metadata(
+        "0.1.0",
+        project_urls=(
+            "Documentation, https://example.invalid/docs",
+            f"Repository, {FIXTURE_REPOSITORY_URL}",
+        ),
+    )
+    wheel_extra, sdist_extra = _metadata_override(artifact, content)
+    project, dist = _distributions(tmp_path, wheel_extra=wheel_extra, sdist_extra=sdist_extra)
+
+    inspect_distributions(dist, project)
+
+
+@pytest.mark.parametrize("artifact", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        (_core_metadata("0.1.0", name="wrong-name"), "metadata Name"),
+        (_core_metadata("0.1.1"), "metadata Version"),
+    ],
+)
+def test_distribution_inspection_preserves_name_and_version_governance(
+    tmp_path: Path, artifact: str, content: bytes, error: str
+) -> None:
+    wheel_extra, sdist_extra = _metadata_override(artifact, content)
+    project, dist = _distributions(tmp_path, wheel_extra=wheel_extra, sdist_extra=sdist_extra)
+
+    with pytest.raises(ReleaseValidationError, match=error):
+        inspect_distributions(dist, project)
+
+
+def test_inspect_dist_cli_rejects_governed_metadata_without_traceback(tmp_path: Path) -> None:
+    content = _core_metadata("0.1.0", summary="Incorrect adversarial description")
+    wheel_extra, _ = _metadata_override("wheel", content)
+    project, dist = _distributions(tmp_path, wheel_extra=wheel_extra)
+    script = PROJECT_ROOT / "scripts" / "release.py"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            script,
+            "inspect-dist",
+            "--dist-dir",
+            dist,
+            "--project-root",
+            project,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "metadata Summary" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_project_metadata_rejects_ambiguous_authors(tmp_path: Path) -> None:
+    project_file = _write_project(tmp_path)
+    project_file.write_text(
+        project_file.read_text(encoding="utf-8").replace(
+            f'authors = [{{ name = "{FIXTURE_AUTHOR}" }}]',
+            'authors = [{ name = "First" }, { name = "Second" }]',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReleaseValidationError, match="exactly one author"):
+        load_project_metadata(project_file)
 
 
 @pytest.mark.parametrize(
