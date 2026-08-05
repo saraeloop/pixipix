@@ -9,7 +9,7 @@ body:
       value: |
         Thanks for helping improve PixiPix. Please provide a minimal, reproducible report.
 
-        Do not include credentials, private artwork, proprietary inputs, personal information, or vulnerability details. Report security issues through [GitHub private vulnerability reporting](https://github.com/saraeloop/pixipix/security/advisories/new).
+        Do not include credentials, private artwork, proprietary inputs, personal information, or vulnerability details. Report security issues through [GitHub private vulnerability reporting](https://github.com/pixipixhq/pixipix/security/advisories/new).
 
   - type: checkboxes
     id: preflight

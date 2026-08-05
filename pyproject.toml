@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/saraeloop/pixipix"
+Repository = "https://github.com/pixipixhq/pixipix"
 
 [project.scripts]
 pixipix = "pixipix.cli:main"
