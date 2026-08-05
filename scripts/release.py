@@ -76,6 +76,9 @@ class ProjectMetadata:
 
     name: str
     version: str
+    description: str
+    author: str
+    repository_url: str
     requires_python: str
     license_file: str
 
@@ -109,6 +112,31 @@ def load_project_metadata(project_file: Path) -> ProjectMetadata:
     if not isinstance(project, dict):
         raise ReleaseValidationError(f"{project_file}: missing [project] table")
 
+    authors = project.get("authors")
+    if not isinstance(authors, list) or len(authors) != 1:
+        raise ReleaseValidationError(
+            f"{project_file}: project.authors must contain exactly one author"
+        )
+    author = authors[0]
+    if not isinstance(author, dict):
+        raise ReleaseValidationError(
+            f"{project_file}: project.authors must contain exactly one author table"
+        )
+    author_name = author.get("name")
+    if not isinstance(author_name, str) or not author_name:
+        raise ReleaseValidationError(
+            f"{project_file}: project.authors[0].name must be a non-empty string"
+        )
+
+    urls = project.get("urls")
+    if not isinstance(urls, dict):
+        raise ReleaseValidationError(f"{project_file}: project.urls must be a table")
+    repository_url = urls.get("Repository")
+    if not isinstance(repository_url, str) or not repository_url:
+        raise ReleaseValidationError(
+            f"{project_file}: project.urls.Repository must be a non-empty string"
+        )
+
     license_value = project.get("license")
     if not isinstance(license_value, dict):
         raise ReleaseValidationError(f"{project_file}: project.license must name a license file")
@@ -121,6 +149,9 @@ def load_project_metadata(project_file: Path) -> ProjectMetadata:
     return ProjectMetadata(
         name=_required_string(project, "name", project_file),
         version=_required_string(project, "version", project_file),
+        description=_required_string(project, "description", project_file),
+        author=author_name,
+        repository_url=repository_url,
         requires_python=_required_string(project, "requires-python", project_file),
         license_file=license_file,
     )
@@ -250,11 +281,55 @@ def _parse_metadata(content: bytes, source: str) -> Message:
 
 
 def _require_metadata(message: Message, key: str, expected: str, source: str) -> None:
-    actual = message.get(key)
+    values = message.get_all(key, [])
+    if not values:
+        raise ReleaseValidationError(f"{source}: metadata {key} is missing, expected {expected!r}")
+    if len(values) != 1:
+        raise ReleaseValidationError(
+            f"{source}: metadata {key} occurs {len(values)} times, expected exactly one value"
+        )
+    actual = values[0]
     if actual != expected:
         raise ReleaseValidationError(
             f"{source}: metadata {key} is {actual!r}, expected {expected!r}"
         )
+
+
+def _require_repository_url(message: Message, expected: str, source: str) -> None:
+    repository_urls: list[str] = []
+    for value in message.get_all("Project-URL", []):
+        label, separator, url = value.partition(",")
+        label = label.strip()
+        url = url.strip()
+        if not separator or not label or not url:
+            raise ReleaseValidationError(f"{source}: metadata Project-URL is malformed: {value!r}")
+        if label == "Repository":
+            repository_urls.append(url)
+
+    if not repository_urls:
+        raise ReleaseValidationError(
+            f"{source}: metadata Project-URL Repository is missing, expected {expected!r}"
+        )
+    if len(repository_urls) != 1:
+        raise ReleaseValidationError(
+            f"{source}: metadata Project-URL Repository occurs {len(repository_urls)} times, "
+            "expected exactly one value"
+        )
+    actual = repository_urls[0]
+    if actual != expected:
+        raise ReleaseValidationError(
+            f"{source}: metadata Project-URL Repository is {actual!r}, expected {expected!r}"
+        )
+
+
+def _require_distribution_metadata(
+    message: Message, metadata: ProjectMetadata, source: str
+) -> None:
+    _require_metadata(message, "Name", metadata.name, source)
+    _require_metadata(message, "Version", metadata.version, source)
+    _require_metadata(message, "Summary", metadata.description, source)
+    _require_metadata(message, "Author", metadata.author, source)
+    _require_repository_url(message, metadata.repository_url, source)
 
 
 def _specifier_parts(value: str) -> set[str]:
@@ -388,8 +463,7 @@ def inspect_distributions(dist_dir: Path, project_root: Path) -> tuple[Path, Pat
     if metadata_member not in wheel.files:
         raise ReleaseValidationError(f"{wheel_path}: missing {metadata_member}")
     wheel_metadata = _parse_metadata(wheel.files[metadata_member], metadata_member)
-    _require_metadata(wheel_metadata, "Name", metadata.name, metadata_member)
-    _require_metadata(wheel_metadata, "Version", metadata.version, metadata_member)
+    _require_distribution_metadata(wheel_metadata, metadata, metadata_member)
     requires_python = wheel_metadata.get("Requires-Python")
     if requires_python is None or _specifier_parts(requires_python) != _specifier_parts(
         metadata.requires_python
@@ -469,8 +543,7 @@ def inspect_distributions(dist_dir: Path, project_root: Path) -> tuple[Path, Pat
     if pkg_info_member not in sdist.files:
         raise ReleaseValidationError(f"{sdist_path}: missing {pkg_info_member}")
     sdist_metadata = _parse_metadata(sdist.files[pkg_info_member], pkg_info_member)
-    _require_metadata(sdist_metadata, "Name", metadata.name, pkg_info_member)
-    _require_metadata(sdist_metadata, "Version", metadata.version, pkg_info_member)
+    _require_distribution_metadata(sdist_metadata, metadata, pkg_info_member)
 
     print(f"verified wheel: {wheel_path.name} ({len(wheel.files)} files)")
     print(f"verified sdist: {sdist_path.name} ({len(sdist.files)} files)")
