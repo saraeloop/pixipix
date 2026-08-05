@@ -16,7 +16,6 @@ from tests.parity.support import (
     PROJECT_ROOT,
     RELEASE_BASELINE_PATH,
     RELEASE_FIELD_CLASSIFICATION,
-    RELEASE_PREPARATION_COMMIT,
     RELEASE_VERSION,
     ParityError,
     _artifact_records,
@@ -240,20 +239,13 @@ def test_every_historical_baseline_leaf_has_one_explicit_classification() -> Non
 
 
 def test_release_candidate_lock_transition_changes_only_root_version() -> None:
-    historical = subprocess.run(
-        ["git", "show", f"{RELEASE_PREPARATION_COMMIT}:uv.lock"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        check=True,
-        timeout=30,
-    ).stdout
     old = b'name = "pixipix"\nversion = "0.1.0a4"\nsource = { editable = "." }'
     new = b'name = "pixipix"\nversion = "0.1.0"\nsource = { editable = "." }'
-    assert historical.count(old) == 1
-    expected = historical.replace(old, new)
     current = (PROJECT_ROOT / "uv.lock").read_bytes()
+    assert current.count(new) == 1
+    historical = current.replace(new, old)
 
-    assert current == expected
+    assert sha256_bytes(historical) == load_baseline()["uvLockSha256"]
     assert sha256_bytes(current) == load_release_baseline()["uvLockSha256"]
 
 
