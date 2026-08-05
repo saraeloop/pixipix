@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import re
+import struct
 import subprocess
 import sys
+import zlib
 from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import NoReturn
@@ -27,7 +31,7 @@ runner = CliRunner()
 
 
 def _console_script() -> Path:
-    script = Path(sys.executable).with_name("pixipix")
+    script = Path(sys.executable).with_name("pixipix.exe" if os.name == "nt" else "pixipix")
     assert script.is_file()
     return script
 
@@ -38,6 +42,15 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     write_rgba(image, transparent_sheet())
     write_config(config)
     return image, config
+
+
+def _write_decompression_bomb_png(path: Path) -> None:
+    write_rgba(path, np.zeros((1, 1, 4), dtype=np.uint8))
+    encoded = bytearray(path.read_bytes())
+    assert encoded[12:16] == b"IHDR"
+    encoded[16:24] = struct.pack(">II", 1_000_000, 1_000_000)
+    encoded[29:33] = struct.pack(">I", zlib.crc32(encoded[12:29]))
+    path.write_bytes(encoded)
 
 
 def test_help_and_version_commands() -> None:
@@ -204,7 +217,7 @@ def test_configuration_failure_exit_code(tmp_path: Path) -> None:
     assert "Traceback" not in result.output
 
 
-def test_unsupported_input_exit_code(tmp_path: Path) -> None:
+def test_px_input_001_unsupported_input_exit_code(tmp_path: Path) -> None:
     config = tmp_path / "project.toml"
     image = tmp_path / "source.jpg"
     write_config(config, extraction_config(names=("one",), expected=1))
@@ -213,7 +226,79 @@ def test_unsupported_input_exit_code(tmp_path: Path) -> None:
     result = runner.invoke(app, ["inspect", str(image), "--config", str(config)])
 
     assert result.exit_code == 3
-    assert "PX_INPUT_001" in result.output
+    assert re.findall(r"\bPX_INPUT_\d{3}\b", result.stderr) == ["PX_INPUT_001"]
+
+
+def test_actual_cli_reports_px_input_004_for_decoder_safety_limit(tmp_path: Path) -> None:
+    config = tmp_path / "project.toml"
+    source = tmp_path / "decoder-bomb.png"
+    output = tmp_path / "output"
+    write_config(config)
+    _write_decompression_bomb_png(source)
+
+    console_script = _console_script().resolve()
+    expected_console_script = (
+        Path(sys.executable).with_name("pixipix.exe" if os.name == "nt" else "pixipix").resolve()
+    )
+    assert console_script == expected_console_script
+    assert console_script.is_file()
+    if os.name != "nt":
+        assert os.access(console_script, os.X_OK)
+
+    result = subprocess.run(
+        [
+            console_script,
+            "extract",
+            source,
+            "--config",
+            config,
+            "--output",
+            output,
+        ],
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    stderr_text = result.stderr.decode("utf-8")
+    stderr_lines = stderr_text.splitlines()
+
+    assert result.returncode == 3
+    assert result.stdout == b""
+    assert stderr_text.endswith("\n")
+    assert stderr_text.count("\n") == 1
+    assert len(stderr_lines) == 1
+    error_line = stderr_lines[0]
+    assert error_line
+    assert re.findall(r"\bPX_INPUT_\d{3}\b", error_line) == ["PX_INPUT_004"]
+    assert "PX_INPUT_004 [load]" in error_line
+    assert "source dimensions exceed decoder safety limits" in error_line
+    assert "reduce the image size within the fixed safety ceiling" in error_line
+    assert "Traceback" not in error_line
+    assert "UnsupportedInputError" not in error_line
+
+    repository_root = Path(__file__).resolve().parents[2]
+    canonical_module_paths = (
+        repository_root / "src" / "pixipix" / "cli.py",
+        repository_root / "src" / "pixipix" / "imageio.py",
+    )
+    assert str(repository_root) not in error_line
+    assert str(tmp_path.resolve()) not in error_line
+    assert "src/pixipix" not in error_line
+    assert "src\\pixipix" not in error_line
+    assert "tests/" not in error_line
+    assert "tests\\" not in error_line
+    assert all(
+        str(module_path.resolve()) not in error_line for module_path in canonical_module_paths
+    )
+    assert re.search(r'\bFile "[^"]+", line \d+', error_line) is None
+    assert re.search(r"(?<![\w.])/(?:[^/\s]+/)*[^/\s]+", error_line) is None
+    assert re.search(r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]", error_line) is None
+
+    assert b"extracted " not in result.stdout
+    assert "extracted " not in error_line
+    assert not output.exists()
+    assert not tuple(tmp_path.glob(f".{output.name}.pixipix-*"))
 
 
 def test_processing_failure_exit_code(tmp_path: Path) -> None:
