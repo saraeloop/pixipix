@@ -5,15 +5,17 @@ import csv
 import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import tomllib
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from PIL import Image
@@ -46,6 +48,32 @@ class BuiltArtifacts:
     direct_wheel: Path
     sdist: Path
     rebuilt_wheel: Path
+
+
+type InstalledArtifactName = Literal["direct_wheel", "rebuilt_wheel"]
+type InstalledAliasName = Literal["var", "tmp"]
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledAliasCase:
+    artifact: InstalledArtifactName
+    alias: InstalledAliasName
+
+
+EXPECTED_INSTALLED_ALIAS_MATRIX = frozenset(
+    {
+        ("direct_wheel", "var"),
+        ("direct_wheel", "tmp"),
+        ("rebuilt_wheel", "var"),
+        ("rebuilt_wheel", "tmp"),
+    }
+)
+INSTALLED_ALIAS_CASES = (
+    InstalledAliasCase("direct_wheel", "var"),
+    InstalledAliasCase("direct_wheel", "tmp"),
+    InstalledAliasCase("rebuilt_wheel", "var"),
+    InstalledAliasCase("rebuilt_wheel", "tmp"),
+)
 
 
 def _run(
@@ -233,6 +261,82 @@ def installed_compatibility_results(
         )
         for artifact_name in ("direct_wheel", "rebuilt_wheel")
     }
+
+
+def _installed_alias_boundary_program() -> str:
+    return (
+        "import json, pathlib, pixipix, sys; "
+        "from pixipix.pipeline.publication import validate_stage_output_target; "
+        "module = pathlib.Path(pixipix.__file__).resolve(); "
+        "environment = pathlib.Path(sys.argv[2]).resolve(); "
+        "checkout = pathlib.Path(sys.argv[3]).resolve(); "
+        "assert module.is_relative_to(environment); "
+        "assert not module.is_relative_to(checkout); "
+        "assert validate_stage_output_target.__module__ == 'pixipix.pipeline.publication'; "
+        "root = pathlib.Path(sys.argv[1]); "
+        "output = root / 'nonexistent-output'; "
+        "assert not output.exists(); "
+        "validate_stage_output_target(output, 'extract'); "
+        "assert not output.exists(); "
+        "print(json.dumps({'module': str(module), 'output': output.name}, sort_keys=True))"
+    )
+
+
+def test_installed_alias_case_matrix_is_exact() -> None:
+    actual = {(case.artifact, case.alias) for case in INSTALLED_ALIAS_CASES}
+
+    assert actual == EXPECTED_INSTALLED_ALIAS_MATRIX
+    assert len(INSTALLED_ALIAS_CASES) == len(EXPECTED_INSTALLED_ALIAS_MATRIX)
+
+
+@pytest.mark.parametrize(
+    "case",
+    INSTALLED_ALIAS_CASES,
+    ids=lambda case: f"{case.artifact}-{case.alias}",
+)
+def test_installed_artifacts_accept_real_alias_nonexistent_output(
+    installed_compatibility_results: dict[str, InstalledCompatibilityResult],
+    case: InstalledAliasCase,
+) -> None:
+    if sys.platform != "darwin":
+        pytest.skip("real macOS installed alias boundary requires Darwin")
+    alias = Path(f"/{case.alias}")
+    canonical_alias = Path(f"/private/{case.alias}")
+    if (
+        not alias.is_symlink()
+        or alias.readlink() != Path(f"private/{case.alias}")
+        or not canonical_alias.is_dir()
+        or not os.path.samefile(alias, canonical_alias)
+    ):
+        pytest.skip(f"host does not expose verified {alias} system alias")
+    base = Path(tempfile.gettempdir()) if case.alias == "var" else alias
+    lexical = Path(tempfile.mkdtemp(prefix="pixipix-installed-alias-", dir=base))
+    try:
+        assert alias in (lexical, *lexical.parents)
+        installed = installed_compatibility_results[case.artifact]
+        result = _run(
+            [
+                installed.interpreter,
+                "-I",
+                "-c",
+                _installed_alias_boundary_program(),
+                lexical,
+                installed.environment,
+                PROJECT_ROOT,
+            ],
+            cwd=installed.working_directory,
+            environment=_sanitized_environment(installed.environment),
+        )
+
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["output"] == "nonexistent-output"
+        module = Path(payload["module"])
+        assert module.is_relative_to(installed.environment.resolve())
+        assert not module.is_relative_to(PROJECT_ROOT.resolve())
+        assert not (lexical / "nonexistent-output").exists()
+    finally:
+        shutil.rmtree(lexical, ignore_errors=True)
 
 
 def _wheel_members(wheel: Path) -> tuple[str, ...]:
@@ -1351,11 +1455,17 @@ def test_wheel_shared_pipeline_imports_work_outside_checkout(
     code = (
         "import pathlib, sys; "
         "sys.path.insert(0, sys.argv[1]); "
+        "import pixipix.pipeline.artifacts as artifacts; "
         "import pixipix.pipeline.input as pipeline_input; "
         "import pixipix.pipeline.publication as publication; "
         "import pixipix.stages.io as stage_io; "
         "assert stage_io.load_stage_input is pipeline_input.load_stage_input; "
         "assert stage_io._valid_owned_output is publication._valid_owned_output; "
+        "assert pipeline_input._is_untrusted_path_component is "
+        "artifacts._is_untrusted_path_component; "
+        "assert publication._is_untrusted_path_component is "
+        "artifacts._is_untrusted_path_component; "
+        "assert not artifacts._is_untrusted_path_component(pathlib.Path('/ordinary')); "
         "print(pathlib.Path(pipeline_input.__file__).resolve()); "
         "print(pathlib.Path(publication.__file__).resolve()); "
         "print(pathlib.Path(stage_io.__file__).resolve())"

@@ -23,9 +23,9 @@ from .artifacts import (
     _dimensions,
     _is_output_marker,
     _is_schema_version_one,
+    _is_untrusted_path_component,
     _read_json_object,
     _safe_frame_relative,
-    _trusted_tmp_alias,
 )
 
 
@@ -48,7 +48,7 @@ def _validate_output_location(output: Path) -> None:
             path=output.name or ".",
         )
     for candidate in (output, *output.parents):
-        if candidate.is_symlink() and not _trusted_tmp_alias(candidate):
+        if _is_untrusted_path_component(candidate):
             raise ProcessingError(
                 "PX_OUTPUT_004",
                 "publish",
@@ -175,7 +175,11 @@ def validate_stage_output_target(
 
 
 def _remove_tree(path: Path, parent: Path, prefix: str) -> bool:
-    if path.parent != parent or not path.name.startswith(prefix) or path.is_symlink():
+    if (
+        path.parent != parent
+        or not path.name.startswith(prefix)
+        or any(_is_untrusted_path_component(candidate) for candidate in (path, *path.parents))
+    ):
         return False
     try:
         shutil.rmtree(path)

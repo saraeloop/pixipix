@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
+import sys
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 
@@ -106,13 +108,68 @@ def _dimensions(frame: dict[str, object], stage: str) -> Dimensions:
     )
 
 
-def _trusted_tmp_alias(path: Path) -> bool:
-    if path != Path("/tmp") or not path.is_symlink():
+_DARWIN_SYSTEM_ALIASES = {
+    Path("/tmp"): (Path("private/tmp"), Path("/private/tmp")),
+    Path("/var"): (Path("private/var"), Path("/private/var")),
+}
+
+
+def _runtime_os_name() -> str:
+    return os.name
+
+
+def _runtime_platform() -> str:
+    return sys.platform
+
+
+def _root_owned_directory(path: Path, *, sticky_allowed: bool) -> bool:
+    if path.is_symlink():
+        return False
+    try:
+        target = path.stat()
+    except OSError:
+        return False
+    if target.st_uid != 0 or not stat.S_ISDIR(target.st_mode):
+        return False
+    writable = target.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    return bool(not writable or (sticky_allowed and target.st_mode & stat.S_ISVTX))
+
+
+def _trusted_darwin_system_alias(path: Path) -> bool:
+    expected = _DARWIN_SYSTEM_ALIASES.get(path)
+    if _runtime_platform() != "darwin" or expected is None or not path.is_symlink():
+        return False
+    relative_target, absolute_target = expected
+    try:
+        link = path.lstat()
+        raw_target = Path(os.readlink(path))
+        namespace = path.parent.stat()
+    except OSError:
+        return False
+    if (
+        link.st_uid != 0
+        or namespace.st_uid != 0
+        or not stat.S_ISDIR(namespace.st_mode)
+        or namespace.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        or raw_target not in {relative_target, absolute_target}
+    ):
+        return False
+    return _root_owned_directory(
+        absolute_target,
+        sticky_allowed=path == Path("/tmp"),
+    )
+
+
+def _trusted_legacy_posix_tmp_alias(path: Path) -> bool:
+    """Preserve the pre-PATH exact-/tmp exception outside Darwin."""
+
+    if _runtime_os_name() != "posix" or _runtime_platform() == "darwin" or path != Path("/tmp"):
+        return False
+    if not path.is_symlink():
         return False
     try:
         link = path.lstat()
-        resolved = path.resolve(strict=True)
-        target = resolved.stat()
+        target = path.stat()
     except OSError:
         return False
     return bool(
@@ -121,3 +178,21 @@ def _trusted_tmp_alias(path: Path) -> bool:
         and stat.S_ISDIR(target.st_mode)
         and target.st_mode & stat.S_ISVTX
     )
+
+
+def _is_untrusted_path_component(path: Path) -> bool:
+    """Classify lexical escapes and redirecting filesystem components fail-closed."""
+
+    if ".." in path.parts:
+        return True
+    try:
+        redirecting = path.is_symlink()
+        if _runtime_os_name() == "nt" and (redirecting or os.path.lexists(path)):
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            redirecting = redirecting or path.is_junction() or bool(attributes & reparse_flag)
+    except OSError:
+        return True
+    if not redirecting:
+        return False
+    return not (_trusted_darwin_system_alias(path) or _trusted_legacy_posix_tmp_alias(path))
