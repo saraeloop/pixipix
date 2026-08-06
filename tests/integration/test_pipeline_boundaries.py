@@ -48,6 +48,7 @@ type CombinedInvalidCase = Literal[
     "identity_and_resource",
     "dimensions_and_png",
     "stage_metadata_and_png",
+    "geometry_and_png",
     "extra_file_and_png",
     "hash_and_png",
 ]
@@ -130,6 +131,15 @@ def _error_signature(error: PixiPixError) -> tuple[object, ...]:
             ("PX_STAGE_009", "scale metadata has invalid scale mode", None, None),
         ),
         (
+            "geometry_and_png",
+            (
+                "PX_STAGE_009",
+                'scale frame "one" output dimensions 3x2 do not match declared scale geometry 2x2',
+                None,
+                None,
+            ),
+        ),
+        (
             "extra_file_and_png",
             ("PX_STAGE_014", "stage directory contains undeclared artifacts", None, None),
         ),
@@ -158,7 +168,7 @@ def test_combined_invalid_inputs_preserve_first_error_and_avoid_decode(
     loaded = load_config(config)
     root = tmp_path / "input"
     expected_stage: Literal["extract", "scale"] = "extract"
-    if case == "stage_metadata_and_png":
+    if case in {"stage_metadata_and_png", "geometry_and_png"}:
         write_declared_scale_stage(root, loaded, ((2, 2),), ((2, 2),), factor=1.0)
         expected_stage = "scale"
     else:
@@ -185,8 +195,16 @@ def test_combined_invalid_inputs_preserve_first_error_and_avoid_decode(
         assert isinstance(bounds, dict)
         bounds["right"] = 0
         _write_metadata(root, metadata)
-    elif case == "stage_metadata_and_png":
-        metadata["scaleMode"] = "invalid"
+    elif case in {"stage_metadata_and_png", "geometry_and_png"}:
+        if case == "stage_metadata_and_png":
+            metadata["scaleMode"] = "invalid"
+        frames = metadata["frames"]
+        assert isinstance(frames, list)
+        frame = frames[0]
+        assert isinstance(frame, dict)
+        output_dimensions = frame["outputDimensions"]
+        assert isinstance(output_dimensions, dict)
+        output_dimensions["width"] = 3
         _write_metadata(root, metadata)
     elif case == "extra_file_and_png":
         (root / "extra.txt").write_text("unexpected", encoding="utf-8")

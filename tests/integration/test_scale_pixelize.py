@@ -10,7 +10,8 @@ import pytest
 from PIL import Image
 
 import pixipix.pipeline.publication as pipeline_publication
-from pixipix.config import load_config
+import pixipix.stages.pixelize.api as pixelize_api
+from pixipix.config import LoadedConfig, load_config
 from pixipix.errors import (
     ConfigurationError,
     ProcessingError,
@@ -57,6 +58,38 @@ def _artifact_bytes(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def _declared_scale_artifact(
+    tmp_path: Path,
+    input_dimensions: tuple[tuple[int, int], ...],
+    output_dimensions: tuple[tuple[int, int], ...],
+    *,
+    factor: float,
+    names: tuple[str, ...] = ("one",),
+) -> tuple[LoadedConfig, Path]:
+    config = tmp_path / "project.toml"
+    write_config(
+        config,
+        pipeline_config(
+            names=names,
+            scale=f'mode = "explicit-factor"\nfactor = {factor}',
+        ),
+    )
+    loaded = load_config(config)
+    root = tmp_path / "scaled"
+    write_declared_scale_stage(
+        root,
+        loaded,
+        input_dimensions,
+        output_dimensions,
+        factor=factor,
+    )
+    for filename, (width, height) in zip(
+        loaded.config.frames.filenames, output_dimensions, strict=True
+    ):
+        write_rgba(root / "frames" / filename, np.zeros((height, width, 4), dtype=np.uint8))
+    return loaded, root
 
 
 def test_reference_width_scale_and_pixelize_pipeline(tmp_path: Path) -> None:
@@ -267,8 +300,17 @@ def test_internally_inconsistent_scale_metadata_is_rejected(tmp_path: Path, tamp
         metadata["configuredFrameOverrides"] = [{"frameName": "missing", "scaleMultiplier": 1.0}]
     stage_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-    with pytest.raises(UnsupportedInputError, match="PX_STAGE_009"):
+    with pytest.raises(UnsupportedInputError) as captured:
         load_stage_input(scaled, "scale")
+    assert captured.value.code == "PX_STAGE_009"
+    assert (
+        captured.value.message
+        == {
+            "prior-hash": "scale metadata has inconsistent configuration identity",
+            "effective-factor": "scale frame factor is inconsistent with the global factor",
+            "unknown-override": "scale metadata has invalid override frame",
+        }[tamper]
+    )
 
 
 def test_reference_scale_metadata_requires_exact_target_identity(tmp_path: Path) -> None:
@@ -285,6 +327,247 @@ def test_reference_scale_metadata_requires_exact_target_identity(tmp_path: Path)
 
     with pytest.raises(UnsupportedInputError, match="PX_STAGE_009"):
         load_stage_input(scaled, "scale")
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected_message"),
+    [
+        (
+            (3, 4),
+            'scale frame "one" output dimensions 3x4 do not match declared scale geometry 4x4',
+        ),
+        (
+            (4, 3),
+            'scale frame "one" output dimensions 4x3 do not match declared scale geometry 4x4',
+        ),
+        (
+            (3, 3),
+            'scale frame "one" output dimensions 3x3 do not match declared scale geometry 4x4',
+        ),
+        ((4, 4), None),
+    ],
+    ids=["width-mismatch", "height-mismatch", "both-mismatch", "coherent"],
+)
+def test_explicit_scale_artifact_dimensions_follow_production_geometry(
+    tmp_path: Path,
+    declared: tuple[int, int],
+    expected_message: str | None,
+) -> None:
+    _loaded, root = _declared_scale_artifact(
+        tmp_path,
+        ((2, 2),),
+        (declared,),
+        factor=2.0,
+    )
+
+    if expected_message is None:
+        stage = load_stage_input(root, "scale")
+        assert (stage.frames[0].dimensions.width, stage.frames[0].dimensions.height) == (4, 4)
+    else:
+        with pytest.raises(UnsupportedInputError) as captured:
+            load_stage_input(root, "scale")
+        assert captured.value.code == "PX_STAGE_009"
+        assert captured.value.message == expected_message
+
+
+@pytest.mark.parametrize(
+    ("factor", "expected"),
+    [(2.5, (3, 3)), (0.01, (1, 1))],
+    ids=["half-away-rounding", "minimum-one"],
+)
+def test_scale_artifact_geometry_preserves_rounding_boundaries(
+    tmp_path: Path,
+    factor: float,
+    expected: tuple[int, int],
+) -> None:
+    _loaded, root = _declared_scale_artifact(
+        tmp_path,
+        ((1, 1),),
+        (expected,),
+        factor=factor,
+    )
+
+    stage = load_stage_input(root, "scale")
+
+    assert (stage.frames[0].dimensions.width, stage.frames[0].dimensions.height) == expected
+
+
+def test_scale_artifact_geometry_uses_multiplier_and_declared_frame_order(tmp_path: Path) -> None:
+    config_text = pipeline_config(overrides="[frame_overrides.signal]\nscale_multiplier = 0.5")
+    _, config, extracted = _extract(tmp_path, config_text)
+    loaded = load_config(config)
+    scaled = tmp_path / "scaled"
+    publish_scale(extracted, loaded, scaled)
+    stage_path = scaled / "stage.json"
+    metadata = json.loads(stage_path.read_text(encoding="utf-8"))
+    metadata["frames"][1]["outputDimensions"] = {"width": 4, "height": 2}
+    stage_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(UnsupportedInputError) as captured:
+        load_stage_input(scaled, "scale")
+
+    assert captured.value.code == "PX_STAGE_009"
+    assert captured.value.message == (
+        'scale frame "signal" output dimensions 4x2 do not match declared scale geometry 2x1'
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "frame_index", "axis", "declared", "expected_message"),
+    [
+        (
+            "reference-frame-width",
+            0,
+            "width",
+            5,
+            "reference scale metadata violates the exact reference target",
+        ),
+        (
+            "reference-frame-width",
+            0,
+            "height",
+            5,
+            'scale frame "idle" output dimensions 4x5 do not match declared scale geometry 4x4',
+        ),
+        (
+            "reference-frame-width",
+            1,
+            "width",
+            6,
+            'scale frame "signal" output dimensions 6x3 do not match declared scale geometry 5x3',
+        ),
+        (
+            "reference-frame-width",
+            1,
+            "height",
+            4,
+            'scale frame "signal" output dimensions 5x4 do not match declared scale geometry 5x3',
+        ),
+        (
+            "reference-frame-height",
+            1,
+            "height",
+            5,
+            "reference scale metadata violates the exact reference target",
+        ),
+        (
+            "reference-frame-height",
+            1,
+            "width",
+            9,
+            'scale frame "signal" output dimensions 9x4 do not match declared scale geometry 8x4',
+        ),
+        (
+            "reference-frame-height",
+            0,
+            "width",
+            7,
+            'scale frame "idle" output dimensions 7x6 do not match declared scale geometry 6x6',
+        ),
+        (
+            "reference-frame-height",
+            0,
+            "height",
+            7,
+            'scale frame "idle" output dimensions 6x7 do not match declared scale geometry 6x6',
+        ),
+    ],
+)
+def test_reference_scale_artifact_geometry_is_axis_and_frame_specific(
+    tmp_path: Path,
+    mode: str,
+    frame_index: int,
+    axis: str,
+    declared: int,
+    expected_message: str,
+) -> None:
+    reference = "idle" if mode == "reference-frame-width" else "signal"
+    config_text = pipeline_config(
+        scale=f'mode = "{mode}"\nreference_frame = "{reference}"\ntarget_size = 2'
+    )
+    _, config, extracted = _extract(tmp_path, config_text)
+    scaled = tmp_path / "scaled"
+    publish_scale(extracted, load_config(config), scaled)
+    stage_path = scaled / "stage.json"
+    metadata = json.loads(stage_path.read_text(encoding="utf-8"))
+    metadata["frames"][frame_index]["outputDimensions"][axis] = declared
+    stage_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(UnsupportedInputError) as captured:
+        load_stage_input(scaled, "scale")
+
+    assert captured.value.code == "PX_STAGE_009"
+    assert captured.value.message == expected_message
+
+
+@pytest.mark.parametrize(
+    ("mode", "reference"),
+    [("reference-frame-width", "idle"), ("reference-frame-height", "signal")],
+)
+def test_valid_reference_scale_artifacts_pass_geometry_validation(
+    tmp_path: Path,
+    mode: str,
+    reference: str,
+) -> None:
+    config_text = pipeline_config(
+        scale=f'mode = "{mode}"\nreference_frame = "{reference}"\ntarget_size = 2'
+    )
+    _, config, extracted = _extract(tmp_path, config_text)
+    scaled = tmp_path / "scaled"
+    publish_scale(extracted, load_config(config), scaled)
+
+    stage = load_stage_input(scaled, "scale")
+
+    assert [frame.name for frame in stage.frames] == ["idle", "signal"]
+
+
+def test_scale_geometry_follows_existing_metadata_error_precedence(tmp_path: Path) -> None:
+    _loaded, root = _declared_scale_artifact(
+        tmp_path,
+        ((2, 2),),
+        ((3, 3),),
+        factor=2.0,
+    )
+    stage_path = root / "stage.json"
+    metadata = json.loads(stage_path.read_text(encoding="utf-8"))
+    metadata["frames"][0]["inputDimensions"]["width"] = 0
+    metadata["frames"][0]["effectiveFactor"] = 3.0
+    stage_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(UnsupportedInputError) as captured:
+        load_stage_input(root, "scale")
+
+    assert captured.value.code == "PX_STAGE_007"
+    assert captured.value.message == "invalid input frame width in stage metadata"
+
+
+def test_geometry_rejection_precedes_decode_and_preserves_existing_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, config, extracted = _extract(tmp_path)
+    loaded = load_config(config)
+    scaled = tmp_path / "scaled"
+    output = tmp_path / "pixelized"
+    publish_scale(extracted, loaded, scaled)
+    publish_pixelize(scaled, loaded, output)
+    before = _artifact_bytes(output)
+    stage_path = scaled / "stage.json"
+    metadata = json.loads(stage_path.read_text(encoding="utf-8"))
+    metadata["frames"][0]["outputDimensions"]["width"] += 1
+    stage_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    def fail_boundary(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("decode and execution must not run for incoherent geometry")
+
+    monkeypatch.setattr(pixelize_api, "decode_stage_input", fail_boundary)
+
+    with pytest.raises(UnsupportedInputError, match="PX_STAGE_009"):
+        publish_pixelize(scaled, loaded, output, force=True)
+
+    assert _artifact_bytes(output) == before
+    assert list(tmp_path.glob(".pixelized.pixipix-build-*")) == []
+    assert list(tmp_path.glob(".pixelized.pixipix-backup-*")) == []
 
 
 def test_symlink_input_parent_is_rejected(tmp_path: Path) -> None:

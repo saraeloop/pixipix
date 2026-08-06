@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pixipix._scale_geometry import transformed_dimension
 from pixipix.config import LoadedConfig, ScaleConfig
 from pixipix.errors import ConfigurationError, ProcessingError, UnsupportedInputError
 from pixipix.models import Dimensions, ProcessingWarning, ScaleFrame
 from pixipix.pipeline.input import ValidatedStageInput
 from pixipix.resources import ResourceProjection
-
-from .geometry import transformed_dimension
 
 MAX_TRANSFORMED_PIXELS = 16_777_216
 

@@ -12,6 +12,7 @@ from typing import Literal, cast
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 
+from pixipix._scale_geometry import transformed_dimension
 from pixipix.errors import UnsupportedInputError
 from pixipix.models import (
     Dimensions,
@@ -83,6 +84,38 @@ def _positive_finite_number(value: object, label: str) -> float:
     if not math.isfinite(number) or number <= 0:
         raise UnsupportedInputError("PX_STAGE_009", f"scale metadata has invalid {label}")
     return number
+
+
+def _validate_scale_frame_geometry(
+    frame_values: dict[str, tuple[int, int, int, int, float, float]],
+    mode: str,
+    reference_frame: str | None = None,
+    exact_target: int | None = None,
+) -> None:
+    for name, values in frame_values.items():
+        input_width, input_height, output_width, output_height, _multiplier, effective = values
+        try:
+            expected_width = transformed_dimension(input_width, effective)
+            expected_height = transformed_dimension(input_height, effective)
+        except (OverflowError, ValueError) as error:
+            raise UnsupportedInputError(
+                "PX_STAGE_009", f'scale frame "{name}" has unrepresentable declared scale geometry'
+            ) from error
+        if name == reference_frame:
+            if exact_target is None:
+                raise UnsupportedInputError(
+                    "PX_STAGE_009", "reference scale metadata lacks an exact target"
+                )
+            if mode == "reference-frame-width":
+                expected_width = exact_target
+            elif mode == "reference-frame-height":
+                expected_height = exact_target
+        if (output_width, output_height) != (expected_width, expected_height):
+            raise UnsupportedInputError(
+                "PX_STAGE_009",
+                f'scale frame "{name}" output dimensions {output_width}x{output_height} '
+                f"do not match declared scale geometry {expected_width}x{expected_height}",
+            )
 
 
 def _processing_warnings(metadata: dict[str, object]) -> tuple[ProcessingWarning, ...]:
@@ -210,6 +243,7 @@ def _validate_scale_metadata(
             raise UnsupportedInputError(
                 "PX_STAGE_009", "explicit scale metadata carries reference-only fields"
             )
+        _validate_scale_frame_geometry(frame_values, mode)
         return
 
     reference_frame, source_measurement, exact_target, logical_target = reference_fields
@@ -247,6 +281,7 @@ def _validate_scale_metadata(
         raise UnsupportedInputError(
             "PX_STAGE_009", "reference scale metadata has inconsistent global factor"
         )
+    _validate_scale_frame_geometry(frame_values, mode, reference_frame, exact_target)
 
 
 def _nonnegative_integer(value: object, label: str) -> int:
