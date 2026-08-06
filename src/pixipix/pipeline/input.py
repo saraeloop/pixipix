@@ -25,10 +25,10 @@ from .artifacts import (
     _dimensions,
     _is_output_marker,
     _is_schema_version_one,
+    _is_untrusted_path_component,
     _positive_dimension,
     _read_json_object,
     _safe_frame_relative,
-    _trusted_tmp_alias,
 )
 
 
@@ -403,11 +403,11 @@ def validate_stage_input(
     """Validate a complete prior-stage handoff without decoding frame PNGs."""
 
     for candidate in (root, *root.parents):
-        if candidate.is_symlink() and not _trusted_tmp_alias(candidate):
+        if _is_untrusted_path_component(candidate):
             raise UnsupportedInputError(
                 "PX_STAGE_001", "stage input path and parents must not be symlinks", path=root.name
             )
-    if root.is_symlink() or not root.is_dir():
+    if not root.is_dir():
         raise UnsupportedInputError(
             "PX_STAGE_001", "stage input must be a real directory", path=root.name
         )

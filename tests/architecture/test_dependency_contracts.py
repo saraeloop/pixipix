@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import importlib.util
+import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -558,20 +562,20 @@ PIPELINE_ALLOWED_INTERNAL_SYMBOLS = {
     ("pixipix.pipeline.input", "pixipix.pipeline.artifacts"): {
         "_dimensions",
         "_is_output_marker",
+        "_is_untrusted_path_component",
         "_is_schema_version_one",
         "_positive_dimension",
         "_read_json_object",
         "_safe_frame_relative",
-        "_trusted_tmp_alias",
     },
     ("pixipix.pipeline.publication", "pixipix.pipeline.artifacts"): {
         "StageName",
         "_dimensions",
         "_is_output_marker",
+        "_is_untrusted_path_component",
         "_is_schema_version_one",
         "_read_json_object",
         "_safe_frame_relative",
-        "_trusted_tmp_alias",
     },
 }
 CHANNEL_ROUNDING_SYMBOL = "round_channel_half_away_from_zero"
@@ -1549,6 +1553,136 @@ def test_pipeline_module_set_and_dependency_direction_are_exact() -> None:
         f"unexpected={sorted(set(internal_symbols) - set(PIPELINE_ALLOWED_INTERNAL_SYMBOLS))}, "
         f"symbols={internal_symbols}"
     )
+
+
+def test_verified_platform_alias_policy_has_one_owner_and_no_blanket_resolution(
+    tmp_path: Path,
+) -> None:
+    owner = PROJECT_ROOT / "src" / "pixipix" / "pipeline" / "artifacts.py"
+    production = _production_files()
+    owner_module = importlib.import_module("pixipix.pipeline.artifacts")
+    consumers = tuple(
+        importlib.import_module(module)
+        for module in ("pixipix.pipeline.input", "pixipix.pipeline.publication")
+    )
+    owner_functions = {
+        value
+        for value in vars(owner_module).values()
+        if inspect.isfunction(value) and value.__module__ == owner_module.__name__
+    }
+    shared_functions = set.intersection(
+        owner_functions,
+        *(
+            {
+                value
+                for value in vars(module).values()
+                if inspect.isfunction(value) and value in owner_functions
+            }
+            for module in consumers
+        ),
+    )
+    ordinary = tmp_path / "ordinary"
+    ordinary.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    redirect = tmp_path / "redirect"
+    redirect.symlink_to(target, target_is_directory=True)
+    escape = tmp_path / "safe" / ".." / "escape"
+
+    def behaves_as_redirect_classifier(runtime_function: object) -> bool:
+        if not inspect.isfunction(runtime_function):
+            return False
+        runtime_callable = cast(Callable[[Path], object], runtime_function)
+        signature = inspect.signature(runtime_callable)
+        parameter = next(iter(signature.parameters.values()))
+        return bool(
+            len(signature.parameters) == 1
+            and parameter.annotation in {Path, "Path"}
+            and signature.return_annotation in {bool, "bool"}
+            and runtime_callable(ordinary) is False
+            and runtime_callable(redirect) is True
+            and runtime_callable(escape) is True
+        )
+
+    classifiers: list[Callable[[Path], bool]] = []
+    for runtime_function in shared_functions:
+        if behaves_as_redirect_classifier(runtime_function):
+            classifiers.append(runtime_function)
+    assert len(classifiers) == 1
+    classifier = classifiers[0]
+    for module in consumers:
+        local_classifiers = [
+            value
+            for value in vars(module).values()
+            if inspect.isfunction(value)
+            and value.__module__ == module.__name__
+            and behaves_as_redirect_classifier(value)
+        ]
+        assert not local_classifiers, (
+            f"{module.__name__} defines a second execution-effective redirect classifier"
+        )
+
+    expected_aliases = {
+        Path("/tmp"): (Path("private/tmp"), Path("/private/tmp")),
+        Path("/var"): (Path("private/var"), Path("/private/var")),
+    }
+    alias_authorities = [
+        value
+        for value in vars(owner_module).values()
+        if isinstance(value, dict)
+        and any(key in expected_aliases for key in value)
+        and all(
+            isinstance(key, Path)
+            and isinstance(targets, tuple)
+            and len(targets) == 2
+            and all(isinstance(target_path, Path) for target_path in targets)
+            for key, targets in value.items()
+        )
+    ]
+    assert alias_authorities == [expected_aliases]
+
+    tree = ast.parse(owner.read_text(encoding="utf-8"), filename=str(owner))
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    reachable = {classifier.__name__}
+    pending = [classifier.__name__]
+    while pending:
+        function_node = functions[pending.pop()]
+        for node in ast.walk(function_node):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                called_name = node.func.id
+                if called_name in functions and called_name not in reachable:
+                    reachable.add(called_name)
+                    pending.append(called_name)
+    forbidden_calls = {
+        call.func.attr
+        for function_name in reachable
+        for call in ast.walk(functions[function_name])
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr in {"resolve", "realpath", "startswith"}
+    }
+    assert not forbidden_calls
+
+    alias_policy_literals = {
+        "/var",
+        "/tmp",
+        "private/var",
+        "private/tmp",
+        "/private/var",
+        "/private/tmp",
+    }
+    for path in production:
+        if path == owner:
+            continue
+        candidate_tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        duplicated_facts = {
+            node.value
+            for node in ast.walk(candidate_tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value in alias_policy_literals
+        }
+        assert not duplicated_facts, f"{path} duplicates alias policy facts: {duplicated_facts}"
 
 
 def test_governed_modules_do_not_dynamically_import_architecture_capabilities() -> None:
