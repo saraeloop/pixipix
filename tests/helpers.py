@@ -188,7 +188,7 @@ def write_declared_scale_stage(
     *,
     factor: float,
 ) -> None:
-    """Write metadata-valid scale declarations backed by deliberately invalid PNG bytes."""
+    """Write structurally valid scale declarations backed by deliberately invalid PNG bytes."""
 
     assert len(input_dimensions) == len(output_dimensions)
     assert len(input_dimensions) == len(loaded.config.frames.names)

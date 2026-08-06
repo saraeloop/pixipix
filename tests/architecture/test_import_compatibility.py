@@ -1757,6 +1757,8 @@ def test_pixelize_facade_is_relative_grouped_and_definition_free() -> None:
 
 def test_scale_facade_reexports_exact_internal_objects() -> None:
     package = PROJECT_ROOT / "src" / "pixipix" / "stages" / "scale"
+    foundational_geometry = importlib.import_module("pixipix._scale_geometry")
+    pipeline_input = importlib.import_module("pixipix.pipeline.input")
     scale = importlib.import_module("pixipix.stages.scale")
     api = importlib.import_module("pixipix.stages.scale.api")
     execution = importlib.import_module("pixipix.stages.scale.execution")
@@ -1783,6 +1785,10 @@ def test_scale_facade_reexports_exact_internal_objects() -> None:
     }
     for name, owner in owners.items():
         assert getattr(scale, name) is getattr(owner, name)
+    assert geometry.round_half_away_from_zero is foundational_geometry.round_half_away_from_zero
+    assert geometry.transformed_dimension is foundational_geometry.transformed_dimension
+    assert pipeline_input.transformed_dimension is foundational_geometry.transformed_dimension
+    assert planning.transformed_dimension is foundational_geometry.transformed_dimension
     for infrastructure_name in (
         "decode_stage_input",
         "Image",
@@ -2143,13 +2149,13 @@ EXPECTED_FACADE_SURFACES = (
             _export(
                 "round_half_away_from_zero",
                 "pixipix.stages.scale.geometry",
-                "pixipix.stages.scale.geometry",
+                "pixipix._scale_geometry",
                 "function",
             ),
             _export(
                 "transformed_dimension",
                 "pixipix.stages.scale.geometry",
-                "pixipix.stages.scale.geometry",
+                "pixipix._scale_geometry",
                 "function",
             ),
             _export(
@@ -2392,6 +2398,7 @@ IMMUTABLE_VALUE_SYMBOLS = frozenset(
     }
 )
 PRODUCTION_OWNER_MODULES = (
+    "pixipix._scale_geometry",
     "pixipix.pipeline.input",
     "pixipix.pipeline.publication",
     "pixipix.stages.align.api",

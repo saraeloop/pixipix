@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import struct
@@ -28,6 +29,7 @@ from tests.helpers import (
 )
 
 runner = CliRunner()
+_CLI_SUBPROCESS_TIMEOUT_SECONDS = 10
 
 
 def _console_script() -> Path:
@@ -172,6 +174,60 @@ def test_pixelize_wrong_prior_stage_has_unsupported_exit(tmp_path: Path) -> None
     assert result.exit_code == 3
     assert "PX_STAGE_003" in result.output
     assert "Traceback" not in result.output
+
+
+def test_actual_subprocess_reports_scale_geometry_incoherence_before_publication(
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "source.png"
+    config = tmp_path / "project.toml"
+    extracted = tmp_path / "extracted"
+    scaled = tmp_path / "scaled"
+    output = tmp_path / "pixelized"
+    write_rgba(image, transparent_sheet())
+    write_config(config, pipeline_config())
+    commands: tuple[tuple[str | Path, ...], ...] = (
+        ("extract", image, "--config", config, "--output", extracted),
+        ("scale", extracted, "--config", config, "--output", scaled),
+    )
+    for command in commands:
+        result = subprocess.run(
+            [_console_script(), *command],
+            capture_output=True,
+            check=False,
+            timeout=_CLI_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert result.returncode == 0, result.stderr
+    stage_path = scaled / "stage.json"
+    metadata = json.loads(stage_path.read_text(encoding="utf-8"))
+    metadata["frames"][0]["outputDimensions"]["width"] = 4
+    stage_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            _console_script(),
+            "pixelize",
+            scaled,
+            "--config",
+            config,
+            "--output",
+            output,
+        ],
+        capture_output=True,
+        check=False,
+        timeout=_CLI_SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+    assert result.returncode == 3
+    assert result.stdout == b""
+    assert result.stderr == (
+        b'PX_STAGE_009 [load] scale frame "idle" output dimensions 4x3 '
+        b"do not match declared scale geometry 3x3.\n"
+    )
+    assert b"Traceback" not in result.stderr
+    assert not output.exists()
+    assert list(tmp_path.glob(".pixelized.pixipix-build-*")) == []
+    assert list(tmp_path.glob(".pixelized.pixipix-backup-*")) == []
 
 
 def test_extreme_finite_scale_factor_is_a_processing_failure(tmp_path: Path) -> None:

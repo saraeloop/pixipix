@@ -9,6 +9,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FOUNDATIONAL_MODULES = {
+    "pixipix._scale_geometry",
     "pixipix.config",
     "pixipix.errors",
     "pixipix.imageio",
@@ -29,6 +30,7 @@ PIPELINE_ALLOWED_PIXIPIX_DEPENDENCIES = {
         "pixipix.models",
     },
     "pixipix.pipeline.input": {
+        "pixipix._scale_geometry",
         "pixipix.errors",
         "pixipix.models",
         "pixipix.pipeline.artifacts",
@@ -340,9 +342,6 @@ SCALE_ALLOWED_INTERNAL_SYMBOLS = {
     ("pixipix.stages.scale.metadata", "pixipix.stages.scale.planning"): {
         "ScaleStagePlan",
     },
-    ("pixipix.stages.scale.planning", "pixipix.stages.scale.geometry"): {
-        "transformed_dimension",
-    },
 }
 SCALE_ALLOWED_PIXIPIX_DEPENDENCIES = {
     "pixipix.stages.scale": {
@@ -369,7 +368,7 @@ SCALE_ALLOWED_PIXIPIX_DEPENDENCIES = {
         "pixipix.stages.scale.metadata",
         "pixipix.stages.scale.planning",
     },
-    "pixipix.stages.scale.geometry": set(),
+    "pixipix.stages.scale.geometry": {"pixipix._scale_geometry"},
     "pixipix.stages.scale.metadata": {
         "pixipix",
         "pixipix.config",
@@ -378,12 +377,12 @@ SCALE_ALLOWED_PIXIPIX_DEPENDENCIES = {
         "pixipix.stages.scale.planning",
     },
     "pixipix.stages.scale.planning": {
+        "pixipix._scale_geometry",
         "pixipix.config",
         "pixipix.errors",
         "pixipix.models",
         "pixipix.pipeline.input",
         "pixipix.resources",
-        "pixipix.stages.scale.geometry",
     },
 }
 SCALE_ALLOWED_EXTERNAL_IMPORTS = {
