@@ -7,6 +7,34 @@ from pixipix.config import LoadedConfig
 from pixipix.models import ExtractionRun, StageMetadata
 
 
+def _valid_owned_extract_metadata(metadata: dict[str, object]) -> bool:
+    """Validate Extract-only metadata facts before an owned target is authorized."""
+
+    required_container_types = {
+        "source": dict,
+        "background": dict,
+        "candidateComponents": list,
+        "acceptedComponents": list,
+        "rejectedComponents": list,
+        "orderedComponents": list,
+        "warnings": list,
+    }
+    if any(
+        not isinstance(metadata.get(key), expected)
+        for key, expected in required_container_types.items()
+    ):
+        return False
+    for key in ("sourceConfigSha256", "effectiveConfigSha256"):
+        value = metadata.get(key)
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            return False
+    return isinstance(metadata.get("pixipixVersion"), str)
+
+
 def _stage_metadata(run: ExtractionRun, loaded: LoadedConfig) -> StageMetadata:
     result = run.result
     return StageMetadata(

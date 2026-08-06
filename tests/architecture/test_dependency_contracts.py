@@ -103,6 +103,7 @@ EXTRACT_ALLOWED_INTERNAL_SYMBOLS = {
     },
     ("pixipix.stages.extract.publication", "pixipix.stages.extract.metadata"): {
         "_stage_metadata",
+        "_valid_owned_extract_metadata",
     },
 }
 EXTRACT_ALLOWED_PIXIPIX_DEPENDENCIES = {
@@ -144,10 +145,8 @@ EXTRACT_ALLOWED_PIXIPIX_DEPENDENCIES = {
     },
     "pixipix.stages.extract.publication": {
         "pixipix.config",
-        "pixipix.errors",
-        "pixipix.imageio",
         "pixipix.models",
-        "pixipix.serialization",
+        "pixipix.pipeline.publication",
         "pixipix.stages.extract.api",
         "pixipix.stages.extract.metadata",
     },
@@ -166,16 +165,7 @@ EXTRACT_ALLOWED_EXTERNAL_IMPORTS = {
     "pixipix.stages.extract.execution": {"__future__", "numpy"},
     "pixipix.stages.extract.metadata": {"__future__"},
     "pixipix.stages.extract.planning": {"__future__", "pathlib"},
-    "pixipix.stages.extract.publication": {
-        "PIL",
-        "__future__",
-        "contextlib",
-        "json",
-        "pathlib",
-        "shutil",
-        "stat",
-        "tempfile",
-    },
+    "pixipix.stages.extract.publication": {"__future__", "pathlib"},
 }
 EXTRACT_ALLOWED_ROOT_IMPORTS: set[tuple[str, str, tuple[str, ...]]] = {
     (
@@ -183,6 +173,13 @@ EXTRACT_ALLOWED_ROOT_IMPORTS: set[tuple[str, str, tuple[str, ...]]] = {
         "pixipix",
         ("__version__",),
     ),
+}
+EXTRACT_ALLOWED_PIPELINE_SYMBOLS = {
+    ("pixipix.stages.extract.publication", "pixipix.pipeline.publication"): {
+        "OutputFrameImage",
+        "publish_stage_output",
+        "validate_stage_output_target",
+    },
 }
 ALIGN_MODULES = {
     "pixipix.stages.align",
@@ -621,7 +618,7 @@ EXTRACT_DEPENDENCY_CONTRACT = StageDependencyContract(
     allowed_pixipix_dependencies=EXTRACT_ALLOWED_PIXIPIX_DEPENDENCIES,
     allowed_external_imports=EXTRACT_ALLOWED_EXTERNAL_IMPORTS,
     allowed_root_imports=EXTRACT_ALLOWED_ROOT_IMPORTS,
-    allowed_shared_symbols={},
+    allowed_shared_symbols=EXTRACT_ALLOWED_PIPELINE_SYMBOLS,
 )
 ALIGN_DEPENDENCY_CONTRACT = StageDependencyContract(
     name="align",
@@ -1667,6 +1664,39 @@ def test_extract_internal_module_set_and_dependency_direction_are_exact() -> Non
     ) in internal_symbols, (
         "Extract-specific approved exception missing: publication must import "
         "api.extract_source; this does not authorize api -> publication"
+    )
+
+
+def test_extract_publication_is_only_a_shared_lifecycle_adapter() -> None:
+    path = PROJECT_ROOT / "src" / "pixipix" / "stages" / "extract" / "publication.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+
+    assert [function.name for function in functions] == ["publish_extraction"]
+    calls = [
+        call.func.id
+        for call in ast.walk(functions[0])
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    ]
+    assert calls == [
+        "validate_stage_output_target",
+        "extract_source",
+        "_stage_metadata",
+        "tuple",
+        "publish_stage_output",
+        "OutputFrameImage",
+    ]
+    forbidden_generic_owners = {
+        "_valid_marker",
+        "_valid_owned_output",
+        "_valid_frame_png",
+        "_validate_output_location",
+        "_validate_staged_output",
+        "_prepare_target",
+        "_remove_temporary_tree",
+    }
+    assert forbidden_generic_owners.isdisjoint(
+        node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
     )
 
 

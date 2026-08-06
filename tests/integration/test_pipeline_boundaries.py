@@ -19,7 +19,6 @@ import pixipix.serialization as serialization
 import pixipix.stages.align.api as align_api
 import pixipix.stages.extract.analysis as extract_analysis
 import pixipix.stages.extract.execution as extract_execution
-import pixipix.stages.extract.publication as extract_publication
 import pixipix.stages.pixelize.api as pixelize_api
 import pixipix.stages.pixelize.execution as pixelize_execution
 import pixipix.stages.scale as scale_stage
@@ -579,11 +578,7 @@ def test_publication_path_replace_patch_affects_fresh_output_and_cleans_staging(
     real_replace = Path.replace
     foundational_open = Image.open
     real_publication_image = pipeline_publication.Image
-    neighboring_images = (
-        pipeline_input.Image,
-        extract_publication.Image,
-        imageio.Image,
-    )
+    neighboring_images = (pipeline_input.Image, imageio.Image)
     observed: list[tuple[str, Path]] = []
     opened: list[object] = []
 
@@ -612,11 +607,7 @@ def test_publication_path_replace_patch_affects_fresh_output_and_cleans_staging(
         with pytest.raises(ProcessingError, match="PX_OUTPUT_005") as captured:
             publish_stage_output(output, "scale", metadata, frames)
         assert len(opened) == 1
-        assert (
-            pipeline_input.Image,
-            extract_publication.Image,
-            imageio.Image,
-        ) == neighboring_images
+        assert (pipeline_input.Image, imageio.Image) == neighboring_images
         assert Image.open is foundational_open
 
     assert len(observed) == 1

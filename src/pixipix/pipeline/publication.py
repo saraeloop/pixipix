@@ -6,10 +6,10 @@ import json
 import shutil
 import tempfile
 import warnings as python_warnings
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
 
 from PIL import Image, UnidentifiedImageError
 
@@ -35,6 +35,9 @@ class OutputFrameImage:
     pixels: UInt8Image
 
 
+type OwnedMetadataValidator = Callable[[dict[str, object]], bool]
+
+
 def _validate_output_location(output: Path) -> None:
     resolved = output.resolve(strict=False)
     if resolved in {Path("/").resolve(), Path.home().resolve(), Path.cwd().resolve()}:
@@ -54,7 +57,11 @@ def _validate_output_location(output: Path) -> None:
             )
 
 
-def _valid_owned_output(path: Path, stage: StageName) -> bool:
+def _valid_owned_output(
+    path: Path,
+    stage: StageName,
+    owned_metadata_validator: OwnedMetadataValidator | None = None,
+) -> bool:
     try:
         marker = _read_json_object(path / ".pixipix-output", "PX_STAGE")
         metadata = _read_json_object(path / "stage.json", "PX_STAGE")
@@ -66,10 +73,16 @@ def _valid_owned_output(path: Path, stage: StageName) -> bool:
             or metadata.get("status") != "successful"
         ):
             return False
+        if owned_metadata_validator is not None and not owned_metadata_validator(metadata):
+            return False
         frames = metadata.get("frames")
         if not isinstance(frames, list) or not frames:
             return False
+        frames_root = path / "frames"
+        if frames_root.is_symlink() or not frames_root.is_dir():
+            return False
         seen: set[str] = set()
+        expected: set[Path] = set()
         for order, item in enumerate(frames):
             if (
                 not isinstance(item, dict)
@@ -83,6 +96,7 @@ def _valid_owned_output(path: Path, stage: StageName) -> bool:
             frame_path = path.joinpath(*relative.parts)
             if frame_path.is_symlink() or not frame_path.is_file():
                 return False
+            expected.add(frame_path)
             if stage == "extract":
                 dimensions = _dimensions(item, "extract")
             else:
@@ -106,12 +120,20 @@ def _valid_owned_output(path: Path, stage: StageName) -> bool:
             ):
                 return False
             seen.add(relative.as_posix().casefold())
-        return True
+        actual = set(frames_root.iterdir())
+        return actual == expected and all(
+            not frame_path.is_symlink() and frame_path.is_file() for frame_path in actual
+        )
     except (UnsupportedInputError, OSError):
         return False
 
 
-def _prepare_target(output: Path, force: bool, stage: StageName) -> None:
+def _prepare_target(
+    output: Path,
+    force: bool,
+    stage: StageName,
+    owned_metadata_validator: OwnedMetadataValidator | None = None,
+) -> None:
     _validate_output_location(output)
     if not output.exists():
         return
@@ -131,7 +153,7 @@ def _prepare_target(output: Path, force: bool, stage: StageName) -> None:
             "non-empty output directory is rejected without --force",
             path=output.name,
         )
-    if not _valid_owned_output(output, stage):
+    if not _valid_owned_output(output, stage, owned_metadata_validator):
         raise ProcessingError(
             "PX_OUTPUT_003",
             "publish",
@@ -142,13 +164,14 @@ def _prepare_target(output: Path, force: bool, stage: StageName) -> None:
 
 def validate_stage_output_target(
     output: Path,
-    stage: Literal["scale", "pixelize", "align"],
+    stage: StageName,
     *,
     force: bool = False,
+    owned_metadata_validator: OwnedMetadataValidator | None = None,
 ) -> None:
-    """Validate a downstream output target without creating or mutating it."""
+    """Validate a stage output target without creating or mutating it."""
 
-    _prepare_target(output, force, stage)
+    _prepare_target(output, force, stage, owned_metadata_validator)
 
 
 def _remove_tree(path: Path, parent: Path, prefix: str) -> bool:
@@ -222,11 +245,12 @@ def _validate_staged(
 
 def publish_stage_output(
     output: Path,
-    stage: Literal["scale", "pixelize", "align"],
+    stage: StageName,
     metadata: object,
     frames: tuple[OutputFrameImage, ...],
     *,
     force: bool = False,
+    owned_metadata_validator: OwnedMetadataValidator | None = None,
 ) -> None:
     """Publish a complete typed stage output through a temporary sibling."""
 
@@ -237,9 +261,9 @@ def publish_stage_output(
     backup_root: Path | None = None
     previous: Path | None = None
     try:
-        _prepare_target(output, force, stage)
+        _prepare_target(output, force, stage, owned_metadata_validator)
         parent.mkdir(parents=True, exist_ok=True)
-        _prepare_target(output, force, stage)
+        _prepare_target(output, force, stage, owned_metadata_validator)
         build_root = Path(tempfile.mkdtemp(prefix=build_prefix, dir=parent))
         frames_root = build_root / "frames"
         frames_root.mkdir()
@@ -249,7 +273,7 @@ def publish_stage_output(
             write_png(build_root.joinpath(*relative.parts), frame.pixels)
         write_json(build_root / "stage.json", metadata)
         _validate_staged(build_root, stage, metadata, frames)
-        _prepare_target(output, force, stage)
+        _prepare_target(output, force, stage, owned_metadata_validator)
         if output.exists():
             backup_root = Path(tempfile.mkdtemp(prefix=backup_prefix, dir=parent))
             previous = backup_root / "previous"
