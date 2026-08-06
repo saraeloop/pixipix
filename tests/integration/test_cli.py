@@ -60,7 +60,7 @@ def test_help_and_version_commands() -> None:
     module_equivalent = runner.invoke(app, [])
     version_result = runner.invoke(app, ["version"])
 
-    assert distribution_version("pixipix") == "0.1.0"
+    assert distribution_version("pixipix") == "0.1.1"
     assert help_result.exit_code == 0
     assert "Tiny poses in. Tidy pixels out." in help_result.output
     assert module_equivalent.exit_code == 0

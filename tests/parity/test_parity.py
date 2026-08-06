@@ -11,12 +11,17 @@ from typing import cast
 import pytest
 
 from tests.parity.support import (
+    ACTIVE_RELEASE_AUTHORITY,
     BASELINE_PATH,
     HISTORICAL_BASELINE_SHA256,
     PROJECT_ROOT,
+    RELEASE_AUTHORITIES,
     RELEASE_BASELINE_PATH,
     RELEASE_FIELD_CLASSIFICATION,
     RELEASE_VERSION,
+    V0_1_0_AUTHORITY,
+    V0_1_0_AUTHORITY_SHA256,
+    V0_1_1_AUTHORITY,
     ParityError,
     _artifact_records,
     canonical_runtime_mismatch,
@@ -25,10 +30,13 @@ from tests.parity.support import (
     compare_behavior,
     load_baseline,
     load_release_baseline,
+    normalize_pixipix_version,
+    require_canonical_runtime,
     sha256_bytes,
 )
 
-HISTORICAL_VERSION = "0.1.0a4"
+POST_M3_VERSION = "0.1.0a4"
+PREVIOUS_RELEASE_VERSION = "0.1.0"
 
 
 def _case_map(manifest: dict[str, object]) -> dict[str, dict[str, object]]:
@@ -43,24 +51,12 @@ def _artifact_map(case: dict[str, object]) -> dict[str, dict[str, object]]:
     return {cast(str, artifact["path"]): artifact for artifact in artifacts}
 
 
-def _normalize_release_version(value: object) -> object:
-    if isinstance(value, dict):
-        return {
-            key: (
-                HISTORICAL_VERSION
-                if key == "pixipixVersion" and item == RELEASE_VERSION
-                else _normalize_release_version(item)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_normalize_release_version(item) for item in value]
-    return value
-
-
 def _assert_release_transition(
     historical: dict[str, object],
     release: dict[str, object],
+    *,
+    historical_version: str,
+    release_version: str,
 ) -> None:
     assert release["environment"] == historical["environment"]
     assert release["fixtureSha256"] == historical["fixtureSha256"]
@@ -86,13 +82,25 @@ def _assert_release_transition(
             for key, item in release_case.items()
             if key not in {"artifacts", "stageTreeSha256"}
         }
-        assert _normalize_release_version(release_behavior) == historical_behavior
+        normalized_behavior, _replacements = normalize_pixipix_version(
+            release_behavior,
+            current_version=release_version,
+            historical_version=historical_version,
+        )
+        assert normalized_behavior == historical_behavior
+
+
+def _stage_json_bytes(value: object) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
 
 
 def _assert_stage_artifacts_are_version_only(
     execution_root: Path,
     historical: dict[str, object],
     release: dict[str, object],
+    *,
+    historical_version: str,
+    release_version: str,
 ) -> None:
     historical_cases = _case_map(historical)
     release_cases = _case_map(release)
@@ -110,13 +118,14 @@ def _assert_stage_artifacts_are_version_only(
                 api_stage = "extract"
             output = execution_root / "api" / "robot" / api_stage
         stage_path = output / "stage.json"
-        current = stage_path.read_bytes()
-        current_token = f'"pixipixVersion": "{RELEASE_VERSION}"'.encode()
-        historical_token = f'"pixipixVersion": "{HISTORICAL_VERSION}"'.encode()
-        occurrences = current.count(current_token)
-        assert occurrences in {1, 2}
-        normalized_stage = current.replace(current_token, historical_token)
-        assert current_token not in normalized_stage
+        current = json.loads(stage_path.read_bytes())
+        normalized_value, replacements = normalize_pixipix_version(
+            current,
+            current_version=release_version,
+            historical_version=historical_version,
+        )
+        assert replacements in {1, 2}
+        normalized_stage = _stage_json_bytes(normalized_value)
         historical_artifact = _artifact_map(historical_cases[case_id])["stage.json"]
         assert len(normalized_stage) == historical_artifact["byteLength"]
         assert sha256_bytes(normalized_stage) == historical_artifact["sha256"]
@@ -190,14 +199,15 @@ def _require_canonical_runtime(
         pytest.skip(mismatch)
 
 
-def test_current_behavior_matches_explicit_v0_1_0_authority(tmp_path: Path) -> None:
+def test_current_behavior_matches_explicit_v0_1_1_authority(tmp_path: Path) -> None:
     expected = load_release_baseline()
-    historical = load_baseline()
+    historical = load_release_baseline(authority=V0_1_0_AUTHORITY)
     _require_canonical_runtime(
         expected.get("environment"),
         capture_environment(PROJECT_ROOT),
     )
-    historical_before = sha256_bytes(BASELINE_PATH.read_bytes())
+    post_m3_before = sha256_bytes(BASELINE_PATH.read_bytes())
+    historical_before = sha256_bytes(V0_1_0_AUTHORITY.path.read_bytes())
     release_before = sha256_bytes(RELEASE_BASELINE_PATH.read_bytes())
     repository_before = _repository_state()
     execution_root = tmp_path / "execution"
@@ -205,24 +215,75 @@ def test_current_behavior_matches_explicit_v0_1_0_authority(tmp_path: Path) -> N
     actual = capture_behavior(PROJECT_ROOT, execution_root)
 
     compare_behavior(expected, actual)
-    _assert_stage_artifacts_are_version_only(execution_root, historical, expected)
-    assert sha256_bytes(BASELINE_PATH.read_bytes()) == historical_before
+    _assert_stage_artifacts_are_version_only(
+        execution_root,
+        historical,
+        expected,
+        historical_version=PREVIOUS_RELEASE_VERSION,
+        release_version=RELEASE_VERSION,
+    )
+    assert sha256_bytes(BASELINE_PATH.read_bytes()) == post_m3_before
+    assert sha256_bytes(V0_1_0_AUTHORITY.path.read_bytes()) == historical_before
     assert sha256_bytes(RELEASE_BASELINE_PATH.read_bytes()) == release_before
     assert _repository_state() == repository_before
 
 
-def test_v0_1_0_authority_preserves_historical_behavior_and_provenance() -> None:
-    historical = load_baseline()
+def test_active_release_gate_requires_the_canonical_runtime() -> None:
+    expected = load_release_baseline()
+
+    require_canonical_runtime(expected.get("environment"), capture_environment(PROJECT_ROOT))
+
+
+def test_release_authority_roster_and_active_selection_are_exact() -> None:
+    assert RELEASE_AUTHORITIES == (V0_1_0_AUTHORITY, V0_1_1_AUTHORITY)
+    assert ACTIVE_RELEASE_AUTHORITY is V0_1_1_AUTHORITY
+
+
+def test_release_gate_rejects_noncanonical_runtime_without_a_skip() -> None:
+    expected = load_release_baseline()["environment"]
+    assert isinstance(expected, dict)
+    noncanonical = {**expected, "platformIdentifier": "linux-x86_64"}
+
+    with pytest.raises(ParityError, match="canonical runtime"):
+        require_canonical_runtime(expected, noncanonical)
+
+
+def test_v0_1_1_authority_preserves_v0_1_0_behavior_and_provenance() -> None:
+    historical = load_release_baseline(authority=V0_1_0_AUTHORITY)
     release = load_release_baseline()
 
-    assert sha256_bytes(BASELINE_PATH.read_bytes()) == HISTORICAL_BASELINE_SHA256
+    assert sha256_bytes(V0_1_0_AUTHORITY.path.read_bytes()) == V0_1_0_AUTHORITY_SHA256
     assert release["releaseVersion"] == RELEASE_VERSION
+    assert release["historicalBaseline"] == {
+        "path": V0_1_0_AUTHORITY.path.name,
+        "sha256": V0_1_0_AUTHORITY_SHA256,
+    }
+    assert release["fieldClassification"] == RELEASE_FIELD_CLASSIFICATION
+    _assert_release_transition(
+        historical,
+        release,
+        historical_version=PREVIOUS_RELEASE_VERSION,
+        release_version=RELEASE_VERSION,
+    )
+
+
+def test_v0_1_0_authority_preserves_post_m3_behavior_and_provenance() -> None:
+    historical = load_baseline()
+    release = load_release_baseline(authority=V0_1_0_AUTHORITY)
+
+    assert sha256_bytes(BASELINE_PATH.read_bytes()) == HISTORICAL_BASELINE_SHA256
+    assert release["releaseVersion"] == V0_1_0_AUTHORITY.version
     assert release["historicalBaseline"] == {
         "path": BASELINE_PATH.name,
         "sha256": HISTORICAL_BASELINE_SHA256,
     }
     assert release["fieldClassification"] == RELEASE_FIELD_CLASSIFICATION
-    _assert_release_transition(historical, release)
+    _assert_release_transition(
+        historical,
+        release,
+        historical_version=POST_M3_VERSION,
+        release_version=V0_1_0_AUTHORITY.version,
+    )
 
 
 def test_every_historical_baseline_leaf_has_one_explicit_classification() -> None:
@@ -239,13 +300,24 @@ def test_every_historical_baseline_leaf_has_one_explicit_classification() -> Non
 
 
 def test_release_candidate_lock_transition_changes_only_root_version() -> None:
-    old = b'name = "pixipix"\nversion = "0.1.0a4"\nsource = { editable = "." }'
-    new = b'name = "pixipix"\nversion = "0.1.0"\nsource = { editable = "." }'
+    historical = subprocess.run(
+        ["git", "show", f"{V0_1_1_AUTHORITY.preparation_commit}:uv.lock"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    ).stdout
+    old = b'name = "pixipix"\nversion = "0.1.0"\nsource = { editable = "." }'
+    new = b'name = "pixipix"\nversion = "0.1.1"\nsource = { editable = "." }'
+    assert historical.count(old) == 1
+    expected = historical.replace(old, new)
     current = (PROJECT_ROOT / "uv.lock").read_bytes()
-    assert current.count(new) == 1
-    historical = current.replace(new, old)
 
-    assert sha256_bytes(historical) == load_baseline()["uvLockSha256"]
+    assert current == expected
+    assert (
+        sha256_bytes(historical)
+        == load_release_baseline(authority=V0_1_0_AUTHORITY)["uvLockSha256"]
+    )
     assert sha256_bytes(current) == load_release_baseline()["uvLockSha256"]
 
 
@@ -270,6 +342,19 @@ def test_release_authority_rejects_behavioral_and_identity_mutations() -> None:
     assert isinstance(error_record, dict)
     error_record["code"] = "PX_RESOURCE_999"
     attacks["error code change"] = error
+    metadata = copy.deepcopy(expected)
+    metadata_result = _case_map(metadata)["robot.api.publish-scale"]["result"]
+    assert isinstance(metadata_result, dict)
+    metadata_frames = metadata_result["frames"]
+    assert isinstance(metadata_frames, list)
+    first_frame = metadata_frames[0]
+    assert isinstance(first_frame, dict)
+    output_dimensions = first_frame["outputDimensions"]
+    assert isinstance(output_dimensions, dict)
+    width = output_dimensions["width"]
+    assert isinstance(width, int)
+    output_dimensions["width"] = width + 1
+    attacks["metadata change"] = metadata
     order = copy.deepcopy(expected)
     result = _case_map(order)["robot.api.publish-scale"]["result"]
     assert isinstance(result, dict)
@@ -280,7 +365,7 @@ def test_release_authority_rejects_behavioral_and_identity_mutations() -> None:
     prerelease = copy.deepcopy(expected)
     prerelease_result = _case_map(prerelease)["robot.api.publish-scale"]["result"]
     assert isinstance(prerelease_result, dict)
-    prerelease_result["pixipixVersion"] = HISTORICAL_VERSION
+    prerelease_result["pixipixVersion"] = PREVIOUS_RELEASE_VERSION
     attacks["prerelease reintroduction"] = prerelease
 
     for attack in attacks.values():
@@ -288,7 +373,7 @@ def test_release_authority_rejects_behavioral_and_identity_mutations() -> None:
             compare_behavior(expected, attack)
 
 
-@pytest.mark.parametrize("version", [HISTORICAL_VERSION, "0.1.1"])
+@pytest.mark.parametrize("version", [PREVIOUS_RELEASE_VERSION, "0.1.2"])
 def test_release_authority_rejects_wrong_version(
     version: str,
     tmp_path: Path,
@@ -303,14 +388,46 @@ def test_release_authority_rejects_wrong_version(
 
 
 def test_release_transition_rejects_historical_mutation() -> None:
-    historical = copy.deepcopy(load_baseline())
+    historical = copy.deepcopy(load_release_baseline(authority=V0_1_0_AUTHORITY))
     release = load_release_baseline()
     _artifact_map(_case_map(historical)["robot.cli.extract"])["frames/idle.png"]["sha256"] = (
         "0" * 64
     )
 
     with pytest.raises(AssertionError):
-        _assert_release_transition(historical, release)
+        _assert_release_transition(
+            historical,
+            release,
+            historical_version=PREVIOUS_RELEASE_VERSION,
+            release_version=RELEASE_VERSION,
+        )
+
+
+def test_structural_version_normalization_does_not_touch_unrelated_values() -> None:
+    value = {
+        "pixipixVersion": RELEASE_VERSION,
+        "note": f"release {RELEASE_VERSION}",
+        "nested": {"otherVersion": RELEASE_VERSION},
+    }
+
+    normalized, replacements = normalize_pixipix_version(
+        value,
+        current_version=RELEASE_VERSION,
+        historical_version=PREVIOUS_RELEASE_VERSION,
+    )
+
+    assert replacements == 1
+    assert normalized == {
+        "pixipixVersion": PREVIOUS_RELEASE_VERSION,
+        "note": f"release {RELEASE_VERSION}",
+        "nested": {"otherVersion": RELEASE_VERSION},
+    }
+
+    globally_replaced = json.loads(
+        json.dumps(value).replace(RELEASE_VERSION, PREVIOUS_RELEASE_VERSION)
+    )
+    assert globally_replaced != normalized
+    assert globally_replaced["note"] == f"release {PREVIOUS_RELEASE_VERSION}"
 
 
 def test_release_authority_rejects_missing_behavioral_fields(tmp_path: Path) -> None:
@@ -320,6 +437,19 @@ def test_release_authority_rejects_missing_behavioral_fields(tmp_path: Path) -> 
     path.write_text(json.dumps(authority), encoding="utf-8")
 
     with pytest.raises(ParityError, match="fields are incomplete"):
+        load_release_baseline(path)
+
+
+def test_release_authority_rejects_wrong_historical_baseline(tmp_path: Path) -> None:
+    authority = copy.deepcopy(load_release_baseline())
+    authority["historicalBaseline"] = {
+        "path": "post-m3.json",
+        "sha256": HISTORICAL_BASELINE_SHA256,
+    }
+    path = tmp_path / "authority.json"
+    path.write_text(json.dumps(authority), encoding="utf-8")
+
+    with pytest.raises(ParityError, match="wrong historical provenance"):
         load_release_baseline(path)
 
 
@@ -346,7 +476,7 @@ def test_noncanonical_runtime_skips_before_behavior_capture(
 
     monkeypatch.setattr("tests.parity.test_parity.capture_behavior", fail_capture)
     with pytest.raises(pytest.skip.Exception, match="linux-x86_64"):
-        test_current_behavior_matches_explicit_v0_1_0_authority(tmp_path)
+        test_current_behavior_matches_explicit_v0_1_1_authority(tmp_path)
 
 
 def test_baseline_cases_capture_complete_ordered_contracts() -> None:

@@ -14,7 +14,7 @@ import tempfile
 import tomllib
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 
 import pytest
@@ -38,9 +38,30 @@ from tests.architecture.test_import_compatibility import (
     compatibility_contract_payload,
     installed_compatibility_manifest_program,
 )
+from tests.parity.support import (
+    PROJECT_ROOT as PARITY_PROJECT_ROOT,
+)
+from tests.parity.support import (
+    capture_behavior,
+    capture_environment,
+    compare_behavior,
+    load_release_baseline,
+    require_canonical_runtime,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_SCRIPT = PROJECT_ROOT / "scripts" / "smoke_distribution.py"
+DET_CONTRACT_SNIPPETS = (
+    "Within a supported, verified PixiPix execution environment",
+    (
+        "same PixiPix version produce the same artifact bytes, the same metadata, and the "
+        "same warning order"
+    ),
+    (
+        "Cross-platform byte equality is not claimed unless it is separately established by "
+        "an explicit parity authority"
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +148,36 @@ def built_artifacts(tmp_path_factory: pytest.TempPathFactory) -> BuiltArtifacts:
         sdist=sdist,
         rebuilt_wheel=_single(rebuilt, "*.whl"),
     )
+
+
+def test_distributions_ship_the_corrected_determinism_contract(
+    built_artifacts: BuiltArtifacts,
+) -> None:
+    packaged_texts: list[str] = []
+    for wheel in (built_artifacts.direct_wheel, built_artifacts.rebuilt_wheel):
+        with zipfile.ZipFile(wheel) as archive:
+            metadata = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+            assert len(metadata) == 1
+            packaged_texts.append(archive.read(metadata[0]).decode("utf-8"))
+    with tarfile.open(built_artifacts.sdist, "r:gz") as archive:
+        pkg_info = [member for member in archive.getmembers() if member.name.endswith("/PKG-INFO")]
+        assert len(pkg_info) == 1
+        root_readme_name = str(PurePosixPath(pkg_info[0].name).parent / "README.md")
+        readme = [member for member in archive.getmembers() if member.name == root_readme_name]
+        assert len(readme) == 1
+        packaged_pkg_info = archive.extractfile(pkg_info[0])
+        packaged_readme = archive.extractfile(readme[0])
+        assert packaged_pkg_info is not None and packaged_readme is not None
+        packaged_texts.extend(
+            [
+                packaged_pkg_info.read().decode("utf-8"),
+                packaged_readme.read().decode("utf-8"),
+            ]
+        )
+
+    for text in packaged_texts:
+        normalized = " ".join(text.split())
+        assert all(snippet in normalized for snippet in DET_CONTRACT_SNIPPETS)
 
 
 def _run_smoke(wheel: Path) -> subprocess.CompletedProcess[str]:
@@ -223,6 +274,71 @@ def _installed_compatibility_result(
             "-c",
             installed_compatibility_manifest_program(),
         ],
+        cwd=working_directory,
+        environment=sanitized,
+    )
+    assert execution.returncode == 0, execution.stderr
+    parsed = json.loads(execution.stdout)
+    assert isinstance(parsed, dict)
+    manifest = parsed.get("manifest")
+    module_paths = parsed.get("module_paths")
+    modules_without_files = parsed.get("modules_without_files")
+    assert isinstance(manifest, dict)
+    assert isinstance(module_paths, dict)
+    assert isinstance(modules_without_files, list)
+    typed_paths = {str(module): str(path) for module, path in module_paths.items()}
+    typed_without_files = tuple(sorted(str(module) for module in modules_without_files))
+    _validate_installed_module_paths(typed_paths, typed_without_files, environment)
+    return InstalledCompatibilityResult(
+        manifest=cast(dict[str, object], manifest),
+        module_paths=typed_paths,
+        modules_without_files=typed_without_files,
+        environment=environment,
+        interpreter=interpreter,
+        working_directory=working_directory,
+    )
+
+
+def _locked_installed_release_environment(
+    wheel: Path,
+    root: Path,
+) -> InstalledCompatibilityResult:
+    environment = root / "venv"
+    working_directory = root / "work"
+    root.mkdir()
+    working_directory.mkdir()
+    sanitized = _sanitized_environment(environment)
+    sanitized.pop("PYTHONHOME", None)
+    sanitized.pop("PYTHONPATH", None)
+    sanitized["UV_PROJECT_ENVIRONMENT"] = str(environment)
+    creation = _run(
+        ["uv", "venv", "--python", sys.executable, environment],
+        cwd=root,
+        environment=sanitized,
+    )
+    assert creation.returncode == 0, creation.stderr
+    interpreter, _console = _isolated_paths(environment)
+    synchronization = _run(
+        [
+            "uv",
+            "sync",
+            "--locked",
+            "--all-groups",
+            "--no-install-project",
+            "--active",
+        ],
+        cwd=PROJECT_ROOT,
+        environment=sanitized,
+    )
+    assert synchronization.returncode == 0, synchronization.stderr
+    installation = _run(
+        ["uv", "pip", "install", "--python", interpreter, "--no-deps", wheel],
+        cwd=root,
+        environment=sanitized,
+    )
+    assert installation.returncode == 0, installation.stderr
+    execution = _run(
+        [interpreter, "-I", "-c", installed_compatibility_manifest_program()],
         cwd=working_directory,
         environment=sanitized,
     )
@@ -1506,6 +1622,33 @@ def test_installed_artifact_runs_complete_pipeline(
     assert "installed resource default identity validation passed" in result.stdout
     assert "installed metadata-only resource refusal validation passed" in result.stdout
     assert "distribution smoke test passed for pixipix" in result.stdout
+
+
+@pytest.mark.parametrize("artifact_name", ["direct_wheel", "rebuilt_wheel"])
+def test_installed_artifact_matches_active_release_authority(
+    tmp_path: Path,
+    built_artifacts: BuiltArtifacts,
+    artifact_name: str,
+) -> None:
+    wheel = getattr(built_artifacts, artifact_name)
+    assert isinstance(wheel, Path)
+    installed = _locked_installed_release_environment(wheel, tmp_path / artifact_name)
+    expected = load_release_baseline()
+    actual_environment = capture_environment(
+        PARITY_PROJECT_ROOT,
+        python=installed.interpreter,
+        import_root=installed.environment,
+    )
+    require_canonical_runtime(expected.get("environment"), actual_environment)
+
+    actual = capture_behavior(
+        PARITY_PROJECT_ROOT,
+        tmp_path / artifact_name / "capture",
+        python=installed.interpreter,
+        import_root=installed.environment,
+    )
+
+    compare_behavior(expected, actual)
 
 
 def test_installed_resource_smoke_contracts_are_safe_and_exact(tmp_path: Path) -> None:
