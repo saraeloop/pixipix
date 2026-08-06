@@ -16,7 +16,6 @@ import pixipix.pipeline.input as pipeline_input
 import pixipix.pipeline.publication as pipeline_publication
 import pixipix.stages.extract.analysis as extract_analysis
 import pixipix.stages.extract.execution as extract_execution
-import pixipix.stages.extract.publication as extract_publication
 import pixipix.stages.pixelize.execution as pixelize_execution
 import pixipix.stages.scale.execution as scale_execution
 import pixipix.stages.scale.geometry as scale_geometry
@@ -393,7 +392,6 @@ def test_execution_image_binding_affects_real_resize(
     neighboring_images = (
         pipeline_input.Image,
         pipeline_publication.Image,
-        extract_publication.Image,
         imageio.Image,
     )
     modes: list[object] = []
@@ -412,7 +410,6 @@ def test_execution_image_binding_affects_real_resize(
         assert (
             pipeline_input.Image,
             pipeline_publication.Image,
-            extract_publication.Image,
             imageio.Image,
         ) == neighboring_images
 
@@ -428,7 +425,6 @@ def test_execution_image_binding_affects_transparent_float_channel_resize(
     neighboring_images = (
         pipeline_input.Image,
         pipeline_publication.Image,
-        extract_publication.Image,
         imageio.Image,
     )
     modes: list[object] = []
@@ -449,7 +445,6 @@ def test_execution_image_binding_affects_transparent_float_channel_resize(
         assert (
             pipeline_input.Image,
             pipeline_publication.Image,
-            extract_publication.Image,
             imageio.Image,
         ) == neighboring_images
 

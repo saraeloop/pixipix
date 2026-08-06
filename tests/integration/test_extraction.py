@@ -12,19 +12,21 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import pixipix.imageio as imageio
+import pixipix.pipeline.publication as pipeline_publication
+import pixipix.stages.extract.analysis as extract_analysis
 import pixipix.stages.extract.api as extract_api
 import pixipix.stages.extract.execution as extract_execution
-import pixipix.stages.extract.publication as extract_publication
 from pixipix.config import load_config
 from pixipix.errors import ProcessingError, ResourcePolicyError
 from pixipix.models import (
+    Component,
+    ExtractedFrame,
     ExtractionResult,
     ExtractionRun,
     FrameImage,
     InspectionResult,
-    StageMetadata,
 )
+from pixipix.pipeline.artifacts import StageName
 from pixipix.stages import extract as extract_stage
 from pixipix.stages.extract import inspect_source, publish_extraction
 from tests.helpers import extraction_config, transparent_sheet, write_config, write_rgba
@@ -114,6 +116,54 @@ def test_extract_run_and_frame_image_identities_are_exact(tmp_path: Path) -> Non
     assert all(type(frame) is FrameImage for frame in run.frame_images)
 
 
+def test_extract_publication_adapts_frame_pixels_without_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image, config = _project(tmp_path)
+    source_pixels: list[np.ndarray[tuple[int, int, int], np.dtype[np.uint8]]] = []
+    adapted_pixels: list[np.ndarray[tuple[int, int, int], np.dtype[np.uint8]]] = []
+    real_crop = extract_api._materialize_frame_crop
+    real_validate = pipeline_publication._validate_staged
+
+    def capture_source_pixels(
+        analysis: extract_analysis._Analysis,
+        component: Component,
+        frame: ExtractedFrame,
+    ) -> FrameImage:
+        image_frame = real_crop(analysis, component, frame)
+        source_pixels.append(image_frame.pixels)
+        return image_frame
+
+    def capture_adapted_pixels(
+        root: Path,
+        stage: StageName,
+        metadata: object,
+        frames: tuple[pipeline_publication.OutputFrameImage, ...],
+    ) -> None:
+        if stage == "extract":
+            adapted_pixels.extend(frame.pixels for frame in frames)
+        real_validate(root, stage, metadata, frames)
+
+    monkeypatch.setattr(extract_api, "_materialize_frame_crop", capture_source_pixels)
+    monkeypatch.setattr(
+        pipeline_publication,
+        "_validate_staged",
+        capture_adapted_pixels,
+    )
+
+    publish_extraction(image, load_config(config), tmp_path / "output")
+
+    assert len(source_pixels) == len(adapted_pixels) == 2
+    assert all(
+        adapted is source for source, adapted in zip(source_pixels, adapted_pixels, strict=True)
+    )
+    assert all(
+        np.shares_memory(source, adapted)
+        for source, adapted in zip(source_pixels, adapted_pixels, strict=True)
+    )
+
+
 def test_repeated_extractions_are_byte_identical(tmp_path: Path) -> None:
     image, config = _project(tmp_path)
     loaded = load_config(config)
@@ -196,23 +246,6 @@ def test_synthetic_non_animal_asset_processes(tmp_path: Path) -> None:
         assert forbidden not in schema
 
 
-def test_failed_staging_removes_temporary_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    image, config = _project(tmp_path)
-    output = tmp_path / "output"
-
-    def fail_write(_path: Path, _pixels: object) -> None:
-        raise ProcessingError("PX_TEST", "encode", "simulated failure")
-
-    monkeypatch.setattr(extract_publication, "write_png", fail_write)
-    with pytest.raises(ProcessingError, match="PX_TEST"):
-        publish_extraction(image, load_config(config), output)
-
-    assert not output.exists()
-    assert list(tmp_path.glob(".output.pixipix-build-*")) == []
-
-
 def test_admitted_extract_uses_package_crop_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -265,30 +298,6 @@ def test_extract_api_ignores_late_execution_crop_patch(
     assert extract_api._materialize_frame_crop is retained_crop
 
 
-def test_extract_publication_ignores_late_imageio_write_png_patch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    image, config = _project(tmp_path)
-    output = tmp_path / "output"
-    assert "pixipix.stages.extract.publication" in sys.modules
-    retained_write_png = extract_publication.write_png
-    calls = 0
-
-    def wrong_owner_write_png(*_args: object, **_kwargs: object) -> None:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("late imageio.write_png patch intercepted Extract publication")
-
-    monkeypatch.setattr(imageio, "write_png", wrong_owner_write_png)
-
-    result = publish_extraction(image, load_config(config), output)
-
-    assert [frame.name for frame in result.frames] == ["idle", "signal"]
-    assert calls == 0
-    assert extract_publication.write_png is retained_write_png
-
-
 def test_nonempty_foreign_directory_is_never_replaced(tmp_path: Path) -> None:
     image, config = _project(tmp_path)
     output = tmp_path / "foreign"
@@ -335,30 +344,6 @@ def test_existing_empty_output_is_replaced_without_force(tmp_path: Path) -> None
     publish_extraction(image, load_config(config), output)
 
     assert (output / "stage.json").is_file()
-
-
-def test_target_created_during_staging_is_revalidated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    image, config = _project(tmp_path)
-    output = tmp_path / "raced"
-    original_validate = extract_publication._validate_staged_output
-
-    def create_foreign_target(root: Path, metadata: StageMetadata) -> None:
-        original_validate(root, metadata)
-        output.mkdir()
-        (output / "keep.txt").write_text("important", encoding="utf-8")
-
-    monkeypatch.setattr(
-        extract_publication,
-        "_validate_staged_output",
-        create_foreign_target,
-    )
-    with pytest.raises(ProcessingError, match="PX_OUTPUT_002"):
-        publish_extraction(image, load_config(config), output)
-
-    assert (output / "keep.txt").read_text(encoding="utf-8") == "important"
-    assert list(tmp_path.glob(".raced.pixipix-build-*")) == []
 
 
 def test_owned_output_can_be_replaced_with_force(tmp_path: Path) -> None:
@@ -478,7 +463,7 @@ def test_root_owned_standard_tmp_alias_is_allowed_when_present() -> None:
     if not Path("/tmp").is_symlink():
         pytest.skip("platform /tmp is not a symlink")
 
-    extract_publication._validate_output_location(Path("/tmp/pixipix-validation-probe"))
+    pipeline_publication._validate_output_location(Path("/tmp/pixipix-validation-probe"))
 
 
 def test_previous_output_is_restored_on_publication_failure(

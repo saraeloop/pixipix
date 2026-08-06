@@ -18,7 +18,6 @@ import pixipix.stages.extract.analysis as extract_analysis
 import pixipix.stages.extract.api as extract_api
 import pixipix.stages.extract.execution as extract_execution
 import pixipix.stages.extract.planning as extract_planning
-import pixipix.stages.extract.publication as extract_publication
 from pixipix.config import ExtractConfig, load_config
 from pixipix.errors import ProcessingError
 from pixipix.models import Component, ExtractedFrame, Rect
@@ -30,7 +29,13 @@ from pixipix.stages.extract import (
     project_extract_resources,
     project_extracted_frames,
 )
-from tests.helpers import extraction_config, transparent_sheet, write_config, write_rgba
+from tests.helpers import (
+    extraction_config,
+    transparent_sheet,
+    write_config,
+    write_declared_extract_stage,
+    write_rgba,
+)
 
 
 class _ExtractNumpyProxy:
@@ -49,7 +54,7 @@ class _ExtractExecutionNumpyProxy:
         return getattr(np, name)
 
 
-class _ExtractPublicationImageProxy:
+class _PipelinePublicationImageProxy:
     def __init__(self, open_image: Callable[..., object]) -> None:
         self.open = open_image
 
@@ -104,46 +109,45 @@ def test_labeling_uses_extract_package_numpy_binding(
     assert np.zeros is global_zeros
 
 
-def test_staged_png_validation_uses_extract_publication_pillow_binding(
+def test_owned_png_validation_uses_shared_publication_pillow_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    candidate = tmp_path / "candidate.png"
-    candidate.write_bytes(b"not decoded because the package binding raises")
+    config = tmp_path / "project.toml"
+    write_config(config)
+    root = tmp_path / "candidate"
+    write_declared_extract_stage(root, load_config(config), ((2, 2), (2, 2)))
 
     class ExtractImageOpenReached(Exception):
         pass
 
     def mark_open(_path: Path) -> None:
-        raise ExtractImageOpenReached("extract publication Image.open reached")
+        raise ExtractImageOpenReached("shared publication Image.open reached")
 
     foundational_image = Image
     foundational_open = Image.open
-    pipeline_image = pipeline_publication.Image
     imageio_image = imageio.Image
 
     with monkeypatch.context() as scoped:
         scoped.setattr(
-            extract_publication,
+            pipeline_publication,
             "Image",
-            _ExtractPublicationImageProxy(mark_open),
+            _PipelinePublicationImageProxy(mark_open),
         )
         with pytest.raises(
             ExtractImageOpenReached,
-            match=r"extract publication Image\.open reached",
+            match=r"shared publication Image\.open reached",
         ) as raised:
-            extract_publication._valid_frame_png(candidate)
+            pipeline_publication._valid_owned_output(root, "extract")
 
         traceback_names = tuple(entry.name for entry in raised.traceback)
-        assert "_valid_frame_png" in traceback_names
+        assert "_valid_owned_output" in traceback_names
         assert traceback_names[-1] == "mark_open"
-        assert pipeline_publication.Image is pipeline_image
         assert imageio.Image is imageio_image
         assert Image is foundational_image
         assert Image.open is foundational_open
 
-    assert extract_publication.Image is foundational_image
-    assert pipeline_publication.Image is pipeline_image
+    assert pipeline_publication.Image is foundational_image
     assert imageio.Image is imageio_image
     assert Image.open is foundational_open
 

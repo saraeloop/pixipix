@@ -184,20 +184,6 @@ MATRIX = (
         signature="(bounds: 'Rect', padding: 'int', width: 'int', height: 'int') -> 'Rect'",
     ),
     _symbol(
-        "pixipix.stages.extract.publication",
-        "_validate_staged_output",
-        ("tests",),
-        "private-but-consumed",
-        signature="(root: 'Path', metadata: 'StageMetadata') -> 'None'",
-    ),
-    _symbol(
-        "pixipix.stages.extract.publication",
-        "_validate_output_location",
-        ("tests",),
-        "private-but-consumed",
-        signature="(output: 'Path') -> 'None'",
-    ),
-    _symbol(
         "pixipix.stages.extract",
         "extract_source",
         ("tests",),
@@ -205,25 +191,11 @@ MATRIX = (
         signature="(input_path: 'Path', loaded: 'LoadedConfig') -> 'ExtractionRun'",
     ),
     _symbol(
-        "pixipix.stages.extract.publication",
-        "_valid_frame_png",
-        ("tests",),
-        "private-but-consumed",
-        signature="(path: 'Path', expected_size: 'tuple[int, int] | None' = None) -> 'bool'",
-    ),
-    _symbol(
         "pixipix.stages.extract.analysis",
         "load_source",
         ("monkeypatch",),
         "private-but-consumed",
         signature="(path: 'Path', config: 'SourceConfig') -> 'SourceImage'",
-    ),
-    _symbol(
-        "pixipix.stages.extract.publication",
-        "Image",
-        ("monkeypatch",),
-        "private-but-consumed",
-        "value",
     ),
     _symbol(
         "pixipix.stages.extract.analysis",
@@ -238,13 +210,6 @@ MATRIX = (
         ("monkeypatch",),
         "private-but-consumed",
         "value",
-    ),
-    _symbol(
-        "pixipix.stages.extract.publication",
-        "write_png",
-        ("monkeypatch",),
-        "private-but-consumed",
-        signature="(path: 'Path', pixels: 'UInt8Image') -> 'None'",
     ),
     _symbol(
         "pixipix.stages.scale",
@@ -595,8 +560,8 @@ MATRIX = (
         ("production",),
         "internal",
         signature=(
-            "(output: 'Path', stage: \"Literal['scale', 'pixelize', 'align']\", "
-            "*, force: 'bool' = False) -> 'None'"
+            "(output: 'Path', stage: 'StageName', *, force: 'bool' = False, "
+            "owned_metadata_validator: 'OwnedMetadataValidator | None' = None) -> 'None'"
         ),
     ),
     _symbol(
@@ -605,9 +570,9 @@ MATRIX = (
         ("production",),
         "internal",
         signature=(
-            "(output: 'Path', stage: \"Literal['scale', 'pixelize', 'align']\", "
-            "metadata: 'object', frames: 'tuple[OutputFrameImage, ...]', "
-            "*, force: 'bool' = False) -> 'None'"
+            "(output: 'Path', stage: 'StageName', metadata: 'object', "
+            "frames: 'tuple[OutputFrameImage, ...]', *, force: 'bool' = False, "
+            "owned_metadata_validator: 'OwnedMetadataValidator | None' = None) -> 'None'"
         ),
     ),
     _symbol(
@@ -615,7 +580,34 @@ MATRIX = (
         "_valid_owned_output",
         ("facade",),
         "private-but-consumed",
-        signature="(path: 'Path', stage: 'StageName') -> 'bool'",
+        signature=(
+            "(path: 'Path', stage: 'StageName', "
+            "owned_metadata_validator: 'OwnedMetadataValidator | None' = None) -> 'bool'"
+        ),
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
+        "_validate_output_location",
+        ("tests",),
+        "private-but-consumed",
+        signature="(output: 'Path') -> 'None'",
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
+        "_validate_staged",
+        ("monkeypatch",),
+        "private-but-consumed",
+        signature=(
+            "(root: 'Path', stage: 'StageName', metadata: 'object', "
+            "frames: 'tuple[OutputFrameImage, ...]') -> 'None'"
+        ),
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
+        "_remove_tree",
+        ("tests",),
+        "private-but-consumed",
+        signature="(path: 'Path', parent: 'Path', prefix: 'str') -> 'bool'",
     ),
     _symbol(
         "pixipix.pipeline.publication",
@@ -676,8 +668,8 @@ MATRIX = (
         ("production",),
         "internal",
         signature=(
-            "(output: 'Path', stage: \"Literal['scale', 'pixelize', 'align']\", "
-            "*, force: 'bool' = False) -> 'None'"
+            "(output: 'Path', stage: 'StageName', *, force: 'bool' = False, "
+            "owned_metadata_validator: 'OwnedMetadataValidator | None' = None) -> 'None'"
         ),
     ),
     _symbol(
@@ -686,9 +678,9 @@ MATRIX = (
         ("production",),
         "internal",
         signature=(
-            "(output: 'Path', stage: \"Literal['scale', 'pixelize', 'align']\", "
-            "metadata: 'object', frames: 'tuple[OutputFrameImage, ...]', "
-            "*, force: 'bool' = False) -> 'None'"
+            "(output: 'Path', stage: 'StageName', metadata: 'object', "
+            "frames: 'tuple[OutputFrameImage, ...]', *, force: 'bool' = False, "
+            "owned_metadata_validator: 'OwnedMetadataValidator | None' = None) -> 'None'"
         ),
     ),
     _symbol(
@@ -696,7 +688,10 @@ MATRIX = (
         "_valid_owned_output",
         ("smoke",),
         "private-but-consumed",
-        signature="(path: 'Path', stage: 'StageName') -> 'bool'",
+        signature=(
+            "(path: 'Path', stage: 'StageName', "
+            "owned_metadata_validator: 'OwnedMetadataValidator | None' = None) -> 'bool'"
+        ),
     ),
 )
 
@@ -790,11 +785,10 @@ DECLARED_PATCH_SEAMS = frozenset(
     {
         "pixipix.pipeline.publication.write_json",
         "pixipix.pipeline.publication.write_png",
+        "pixipix.pipeline.publication._validate_staged",
         "pixipix.stages.align.api.decode_stage_input",
         "pixipix.stages.extract.analysis.load_source",
         "pixipix.stages.extract.api._materialize_frame_crop",
-        "pixipix.stages.extract.publication._validate_staged_output",
-        "pixipix.stages.extract.publication.write_png",
         "pixipix.stages.pixelize.api.decode_stage_input",
         "pixipix.stages.scale.api.decode_stage_input",
     }
@@ -808,7 +802,6 @@ OWNER_LOCAL_DEPENDENCIES = frozenset(
         "pixipix.pipeline.publication.Image",
         "pixipix.stages.extract.analysis.np",
         "pixipix.stages.extract.execution.np",
-        "pixipix.stages.extract.publication.Image",
         "pixipix.stages.pixelize.execution.np",
         "pixipix.stages.scale.execution.Image",
         "pixipix.stages.scale.execution.np",
@@ -821,9 +814,6 @@ DELIBERATE_NON_SEAMS = frozenset(
     {
         "pixipix.pipeline.publication._prepare_target",
         "pixipix.pipeline.publication._remove_tree",
-        "pixipix.stages.extract.publication._prepare_target",
-        "pixipix.stages.extract.publication._remove_temporary_tree",
-        "pixipix.stages.extract.publication._valid_frame_png",
     }
 )
 
@@ -831,11 +821,10 @@ EXPECTED_DECLARED_PATCH_SEAMS = frozenset(
     {
         "pixipix.pipeline.publication.write_json",
         "pixipix.pipeline.publication.write_png",
+        "pixipix.pipeline.publication._validate_staged",
         "pixipix.stages.align.api.decode_stage_input",
         "pixipix.stages.extract.analysis.load_source",
         "pixipix.stages.extract.api._materialize_frame_crop",
-        "pixipix.stages.extract.publication._validate_staged_output",
-        "pixipix.stages.extract.publication.write_png",
         "pixipix.stages.pixelize.api.decode_stage_input",
         "pixipix.stages.scale.api.decode_stage_input",
     }
@@ -849,7 +838,6 @@ EXPECTED_OWNER_LOCAL_DEPENDENCIES = frozenset(
         "pixipix.pipeline.publication.Image",
         "pixipix.stages.extract.analysis.np",
         "pixipix.stages.extract.execution.np",
-        "pixipix.stages.extract.publication.Image",
         "pixipix.stages.pixelize.execution.np",
         "pixipix.stages.scale.execution.Image",
         "pixipix.stages.scale.execution.np",
@@ -862,9 +850,6 @@ EXPECTED_DELIBERATE_NON_SEAMS = frozenset(
     {
         "pixipix.pipeline.publication._prepare_target",
         "pixipix.pipeline.publication._remove_tree",
-        "pixipix.stages.extract.publication._prepare_target",
-        "pixipix.stages.extract.publication._remove_temporary_tree",
-        "pixipix.stages.extract.publication._valid_frame_png",
     }
 )
 
@@ -1071,10 +1056,10 @@ def test_stable_patch_authority_registries_are_exact_and_resolve() -> None:
     assert DELIBERATE_NON_SEAMS is not EXPECTED_DELIBERATE_NON_SEAMS
     assert PATCH_AUTHORITY_CLASSIFICATIONS == EXPECTED_PATCH_CLASSIFICATIONS
     assert PATCH_AUTHORITY_CLASSIFICATIONS is not EXPECTED_PATCH_CLASSIFICATIONS
-    assert len(DECLARED_PATCH_SEAMS) == 9
-    assert len(OWNER_LOCAL_DEPENDENCIES) == 10
+    assert len(DECLARED_PATCH_SEAMS) == 8
+    assert len(OWNER_LOCAL_DEPENDENCIES) == 9
     assert {"pathlib.Path.replace"} == BROAD_NECESSARY_SEAMS
-    assert len(DELIBERATE_NON_SEAMS) == 5
+    assert len(DELIBERATE_NON_SEAMS) == 2
 
 
 def test_candidate_registry_copies_cannot_mutate_expected_contract() -> None:
@@ -1189,7 +1174,7 @@ def _mutated_patch_registries(mutation: PatchRegistryMutation) -> PatchAuthority
     if mutation == "omit-declared":
         declared.remove("pixipix.stages.align.api.decode_stage_input")
     elif mutation == "add-non-seam":
-        declared.add("pixipix.stages.extract.publication._valid_frame_png")
+        declared.add("pixipix.pipeline.publication._remove_tree")
     elif mutation == "add-probe":
         declared.add(_REPRESENTATIVE_IMPLEMENTATION_PROBE)
     elif mutation == "add-harness":
@@ -1203,7 +1188,7 @@ def _mutated_patch_registries(mutation: PatchRegistryMutation) -> PatchAuthority
     elif mutation == "omit-dependency":
         dependencies.remove("pixipix.stages.scale.execution.Image")
     elif mutation == "omit-non-seam":
-        non_seams.remove("pixipix.stages.extract.publication._valid_frame_png")
+        non_seams.remove("pixipix.pipeline.publication._remove_tree")
     elif mutation == "double-classify":
         dependencies.add("pixipix.pipeline.publication.write_png")
     return {
@@ -1220,7 +1205,7 @@ def _mutated_patch_registries(mutation: PatchRegistryMutation) -> PatchAuthority
         ("omit-declared", "pixipix.stages.align.api.decode_stage_input", "declared seam"),
         (
             "add-non-seam",
-            "pixipix.stages.extract.publication._valid_frame_png",
+            "pixipix.pipeline.publication._remove_tree",
             "deliberate non-seam",
         ),
         ("add-probe", _REPRESENTATIVE_IMPLEMENTATION_PROBE, "implementation probe"),
@@ -1234,7 +1219,7 @@ def _mutated_patch_registries(mutation: PatchRegistryMutation) -> PatchAuthority
         ("omit-dependency", "pixipix.stages.scale.execution.Image", "owner-local dependency"),
         (
             "omit-non-seam",
-            "pixipix.stages.extract.publication._valid_frame_png",
+            "pixipix.pipeline.publication._remove_tree",
             "deliberate non-seam",
         ),
         ("double-classify", "pixipix.pipeline.publication.write_png", "declared seam"),
@@ -1459,11 +1444,18 @@ def test_extract_facade_reexports_exact_internal_objects_and_omits_old_bindings(
         "_analyze",
         "_padded_bounds",
         "_materialize_frame_crop",
+    ):
+        assert not hasattr(facade, name), f"migrated private facade binding remains: {name}"
+    for name in (
+        "_valid_marker",
+        "_valid_owned_output",
         "_valid_frame_png",
         "_validate_staged_output",
         "_validate_output_location",
+        "_prepare_target",
+        "_remove_temporary_tree",
     ):
-        assert not hasattr(facade, name), f"migrated private facade binding remains: {name}"
+        assert not hasattr(publication, name), f"duplicate publication owner remains: {name}"
     for name in (
         "np",
         "Image",
