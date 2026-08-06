@@ -519,9 +519,12 @@ PixiPix does not merge new files into stale output:
 
 ## Determinism
 
-The same input, the same effective configuration, and the same PixiPix version
-produce the same artifact bytes, the same metadata, and the same warning order.
-This holds across runs, machines, and supported platforms.
+Within a supported, verified PixiPix execution environment, the same input, the same
+effective configuration, and the same PixiPix version produce the same artifact bytes,
+the same metadata, and the same warning order. The tracked parity authority records the
+Python, dependency, and platform environment in which this byte-level contract is
+verified. Cross-platform byte equality is not claimed unless it is separately
+established by an explicit parity authority.
 
 Concretely:
 
