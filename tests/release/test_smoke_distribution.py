@@ -75,6 +75,10 @@ type InstalledArtifactName = Literal["direct_wheel", "rebuilt_wheel"]
 type InstalledAliasName = Literal["var", "tmp"]
 
 
+def _is_darwin_runtime() -> bool:
+    return sys.platform == "darwin"
+
+
 @dataclass(frozen=True, slots=True)
 class InstalledAliasCase:
     artifact: InstalledArtifactName
@@ -414,7 +418,7 @@ def test_installed_artifacts_accept_real_alias_nonexistent_output(
     installed_compatibility_results: dict[str, InstalledCompatibilityResult],
     case: InstalledAliasCase,
 ) -> None:
-    if sys.platform != "darwin":
+    if not _is_darwin_runtime():
         pytest.skip("real macOS installed alias boundary requires Darwin")
     alias = Path(f"/{case.alias}")
     canonical_alias = Path(f"/private/{case.alias}")
