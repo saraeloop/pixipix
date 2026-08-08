@@ -51,6 +51,7 @@ from tests.parity.support import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_SCRIPT = PROJECT_ROOT / "scripts" / "smoke_distribution.py"
+EXTERNAL_RELEASE_CANDIDATE_ENV = "PIXIPIX_RELEASE_CANDIDATE_DIR"
 DET_CONTRACT_SNIPPETS = (
     "Within a supported, verified PixiPix execution environment",
     (
@@ -124,34 +125,148 @@ def _single(directory: Path, pattern: str) -> Path:
     return matches[0]
 
 
+def _external_release_candidate() -> tuple[Path, Path] | None:
+    raw_directory = os.environ.get(EXTERNAL_RELEASE_CANDIDATE_ENV)
+    if raw_directory is None:
+        return None
+    assert raw_directory, f"{EXTERNAL_RELEASE_CANDIDATE_ENV} must not be empty"
+    candidate = Path(raw_directory)
+    assert candidate.is_absolute(), f"{EXTERNAL_RELEASE_CANDIDATE_ENV} must be absolute"
+    assert not candidate.is_symlink(), f"{EXTERNAL_RELEASE_CANDIDATE_ENV} must not be a symlink"
+    assert candidate.is_dir(), f"{EXTERNAL_RELEASE_CANDIDATE_ENV} must be a directory"
+    resolved = candidate.resolve(strict=True)
+    assert not resolved.is_relative_to(PROJECT_ROOT.resolve()), (
+        f"{EXTERNAL_RELEASE_CANDIDATE_ENV} must be outside the source checkout"
+    )
+    entries = tuple(sorted(resolved.iterdir()))
+    assert len(entries) == 2, "external release candidate must contain exactly two artifacts"
+    assert all(path.is_file() and not path.is_symlink() for path in entries), (
+        "external release candidate artifacts must be regular files"
+    )
+    wheels = tuple(path for path in entries if path.suffix == ".whl")
+    sdists = tuple(path for path in entries if path.name.endswith(".tar.gz"))
+    assert len(wheels) == 1, "external release candidate must contain exactly one wheel"
+    assert len(sdists) == 1, "external release candidate must contain exactly one sdist"
+    return wheels[0], sdists[0]
+
+
 @pytest.fixture(scope="session")
 def built_artifacts(tmp_path_factory: pytest.TempPathFactory) -> BuiltArtifacts:
     root = tmp_path_factory.mktemp("distribution-smoke-artifacts")
-    direct = root / "direct"
     rebuilt = root / "rebuilt"
-    direct.mkdir()
     rebuilt.mkdir()
-    wheel_result = _run(
-        ["uv", "build", "--wheel", "--no-sources", "--out-dir", direct],
-        cwd=PROJECT_ROOT,
-    )
-    assert wheel_result.returncode == 0, wheel_result.stderr
-    sdist_result = _run(
-        ["uv", "build", "--sdist", "--no-sources", "--out-dir", direct],
-        cwd=PROJECT_ROOT,
-    )
-    assert sdist_result.returncode == 0, sdist_result.stderr
-    sdist = _single(direct, "*.tar.gz")
+    external = _external_release_candidate()
+    if external is None:
+        direct = root / "direct"
+        direct.mkdir()
+        wheel_result = _run(
+            ["uv", "build", "--wheel", "--no-sources", "--out-dir", direct],
+            cwd=PROJECT_ROOT,
+        )
+        assert wheel_result.returncode == 0, wheel_result.stderr
+        sdist_result = _run(
+            ["uv", "build", "--sdist", "--no-sources", "--out-dir", direct],
+            cwd=PROJECT_ROOT,
+        )
+        assert sdist_result.returncode == 0, sdist_result.stderr
+        direct_wheel = _single(direct, "*.whl")
+        sdist = _single(direct, "*.tar.gz")
+    else:
+        direct_wheel, sdist = external
     rebuilt_result = _run(
         ["uv", "build", "--wheel", "--no-sources", "--out-dir", rebuilt, sdist],
         cwd=PROJECT_ROOT,
     )
     assert rebuilt_result.returncode == 0, rebuilt_result.stderr
     return BuiltArtifacts(
-        direct_wheel=_single(direct, "*.whl"),
+        direct_wheel=direct_wheel,
         sdist=sdist,
         rebuilt_wheel=_single(rebuilt, "*.whl"),
     )
+
+
+def test_external_release_candidate_mode_is_strict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    wheel = candidate / "pixipix-0.1.1-py3-none-any.whl"
+    sdist = candidate / "pixipix-0.1.1.tar.gz"
+    wheel.write_bytes(b"wheel")
+    sdist.write_bytes(b"sdist")
+    monkeypatch.setenv(EXTERNAL_RELEASE_CANDIDATE_ENV, str(candidate))
+
+    assert _external_release_candidate() == (wheel.resolve(), sdist.resolve())
+
+    extra = candidate / "unexpected.txt"
+    extra.write_text("unexpected", encoding="utf-8")
+    with pytest.raises(AssertionError, match="exactly two artifacts"):
+        _external_release_candidate()
+
+
+@pytest.mark.parametrize("case", ["empty", "relative", "missing"])
+def test_external_release_candidate_mode_rejects_invalid_directory(
+    case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw_directory = {
+        "empty": "",
+        "relative": "relative",
+        "missing": str(tmp_path / "missing"),
+    }[case]
+    monkeypatch.setenv(EXTERNAL_RELEASE_CANDIDATE_ENV, raw_directory)
+
+    with pytest.raises(AssertionError):
+        _external_release_candidate()
+
+
+def test_external_release_candidate_mode_rejects_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(EXTERNAL_RELEASE_CANDIDATE_ENV, str(PROJECT_ROOT))
+
+    with pytest.raises(AssertionError, match="outside the source checkout"):
+        _external_release_candidate()
+
+
+def test_external_release_candidate_mode_rejects_symlinked_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "pixipix.whl").write_bytes(b"wheel")
+    (candidate / "pixipix.tar.gz").write_bytes(b"sdist")
+    symlink = tmp_path / "candidate-symlink"
+    symlink.symlink_to(candidate, target_is_directory=True)
+    monkeypatch.setenv(EXTERNAL_RELEASE_CANDIDATE_ENV, str(symlink))
+
+    with pytest.raises(AssertionError, match="must not be a symlink"):
+        _external_release_candidate()
+
+
+@pytest.mark.parametrize(
+    ("names", "message"),
+    [
+        (("pixipix.zip", "pixipix.tar.gz"), "exactly one wheel"),
+        (
+            ("pixipix-a.whl", "pixipix-b.whl", "pixipix.tar.gz"),
+            "exactly two artifacts",
+        ),
+    ],
+)
+def test_external_release_candidate_mode_rejects_ambiguous_artifacts(
+    names: tuple[str, ...],
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    for name in names:
+        (candidate / name).write_bytes(b"artifact")
+    monkeypatch.setenv(EXTERNAL_RELEASE_CANDIDATE_ENV, str(candidate))
+
+    with pytest.raises(AssertionError, match=message):
+        _external_release_candidate()
 
 
 def test_distributions_ship_the_corrected_determinism_contract(
@@ -1636,6 +1751,16 @@ def test_installed_artifact_matches_active_release_authority(
 ) -> None:
     wheel = getattr(built_artifacts, artifact_name)
     assert isinstance(wheel, Path)
+    external = _external_release_candidate()
+    if external is not None:
+        direct_wheel, sdist = external
+        assert built_artifacts.direct_wheel == direct_wheel
+        assert built_artifacts.sdist == sdist
+        if artifact_name == "direct_wheel":
+            assert wheel == direct_wheel
+        else:
+            assert wheel == built_artifacts.rebuilt_wheel
+            assert wheel != direct_wheel
     installed = _locked_installed_release_environment(wheel, tmp_path / artifact_name)
     expected = load_release_baseline()
     actual_environment = capture_environment(
