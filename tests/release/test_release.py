@@ -6,8 +6,12 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+import urllib.error
+import urllib.request
 import zipfile
+from email.message import Message
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -18,6 +22,8 @@ from scripts.release import (
     inspect_distributions,
     load_project_metadata,
     load_restricted_distribution_prefixes,
+    require_pypi_version_absent,
+    require_stable_github_release,
     validate_release_tag,
 )
 
@@ -238,6 +244,161 @@ def test_tag_validator_cli_exits_nonzero_on_mismatch(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "tag/package version mismatch" in result.stderr
+
+
+class _PyPIResponse(io.BytesIO):
+    def __enter__(self) -> _PyPIResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+def test_pypi_guard_accepts_only_an_absent_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def absent(_url: str, *, timeout: int) -> _PyPIResponse:
+        assert timeout == 30
+        return _PyPIResponse(b'{"info":{"name":"pixipix"},"releases":{"0.1.0":[]}}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", absent)
+
+    require_pypi_version_absent("0.1.1")
+
+
+def test_pypi_guard_fails_closed_when_release_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def present(_url: str, *, timeout: int) -> _PyPIResponse:
+        assert timeout == 30
+        return _PyPIResponse(b'{"info":{"name":"pixipix"},"releases":{"0.1.1":[]}}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", present)
+
+    with pytest.raises(ReleaseValidationError, match="already exists on PyPI"):
+        require_pypi_version_absent("0.1.1")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"",
+        b"not-json",
+        b"\xff",
+        b"[]",
+        b"{}",
+        b'{"info":{"name":"pixipix"},"releases":[]}',
+        b'{"info":{"name":"pixipix"},"releases":{}}',
+        b'{"info":{"name":"other"},"releases":{"0.1.0":[]}}',
+        b'{"info":{"name":"pixipix"},"releases":{"not-a-version":[]}}',
+        b'{"info":{"name":"pixipix"},"releases":{"0.1.0":{}}}',
+    ],
+)
+def test_pypi_guard_fails_closed_on_untrusted_index_response(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+) -> None:
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda _url, *, timeout: _PyPIResponse(payload),
+    )
+
+    with pytest.raises(ReleaseValidationError):
+        require_pypi_version_absent("0.1.1")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError("timed out"),
+        urllib.error.URLError("offline"),
+        urllib.error.HTTPError(
+            "https://pypi.org/pypi/pixipix/json",
+            503,
+            "unavailable",
+            hdrs=Message(),
+            fp=None,
+        ),
+    ],
+)
+def test_pypi_guard_fails_closed_on_index_unavailability(
+    monkeypatch: pytest.MonkeyPatch,
+    error: OSError,
+) -> None:
+    def unavailable(_url: str, *, timeout: int) -> NoReturn:
+        assert timeout == 30
+        raise error
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+
+    with pytest.raises(ReleaseValidationError, match="cannot read the PyPI release index"):
+        require_pypi_version_absent("0.1.1")
+
+
+def test_pypi_guard_rejects_malformed_version_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("network must not be reached")
+
+    monkeypatch.setattr(urllib.request, "urlopen", unexpected)
+
+    with pytest.raises(ReleaseValidationError, match="malformed"):
+        require_pypi_version_absent("refs/heads/main")
+
+
+def test_github_release_guard_accepts_only_exact_stable_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b'{"tag_name":"v0.1.1","draft":false,"prerelease":false}'
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda _url, *, timeout: _PyPIResponse(payload),
+    )
+
+    require_stable_github_release("v0.1.1")
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b'{"tag_name":"v0.1.0","draft":false,"prerelease":false}', "exact tag"),
+        (b'{"tag_name":"v0.1.1","draft":true,"prerelease":false}', "must not be a draft"),
+        (
+            b'{"tag_name":"v0.1.1","draft":false,"prerelease":true}',
+            "must not be a prerelease",
+        ),
+        (b"{}", "exact tag"),
+    ],
+)
+def test_github_release_guard_rejects_wrong_or_unstable_release(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda _url, *, timeout: _PyPIResponse(payload),
+    )
+
+    with pytest.raises(ReleaseValidationError, match=message):
+        require_stable_github_release("v0.1.1")
+
+
+def test_github_release_guard_fails_closed_on_api_unavailability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(_url: str, *, timeout: int) -> NoReturn:
+        assert timeout == 30
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+
+    with pytest.raises(ReleaseValidationError, match="cannot read the GitHub Release API"):
+        require_stable_github_release("v0.1.1")
 
 
 def test_distribution_inspection_accepts_expected_metadata_and_contents(tmp_path: Path) -> None:

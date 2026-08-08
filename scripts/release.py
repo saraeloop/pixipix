@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import stat
 import sys
 import tarfile
 import tomllib
+import urllib.error
+import urllib.request
 import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -25,6 +28,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_TAG = re.compile(
     r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:(?:a|b|rc)(?:0|[1-9][0-9]*))?$"
 )
+PYPI_PROJECT = "pixipix"
+PYPI_JSON_URL = f"https://pypi.org/pypi/{PYPI_PROJECT}/json"
+GITHUB_REPOSITORY = "pixipixhq/pixipix"
+GITHUB_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/tags"
 FORBIDDEN_COMPONENTS = {
     ".git",
     ".mypy_cache",
@@ -176,6 +183,62 @@ def validate_release_tag(tag: str, project_file: Path) -> str:
             f"but {project_file} declares {metadata.version!r}"
         )
     return tag_version
+
+
+def _load_json_url(url: str, source: str) -> dict[str, object]:
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            payload = json.load(response)
+    except (
+        OSError,
+        TimeoutError,
+        UnicodeDecodeError,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+    ) as error:
+        raise ReleaseValidationError(f"cannot read {source}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ReleaseValidationError(f"{source} response is not an object")
+    return payload
+
+
+def require_pypi_version_absent(version: str) -> None:
+    """Fail closed unless ``version`` is absent from the public PyPI release index."""
+
+    if RELEASE_TAG.fullmatch(f"v{version}") is None:
+        raise ReleaseValidationError(f"PyPI release version {version!r} is malformed")
+    payload = _load_json_url(PYPI_JSON_URL, "the PyPI release index")
+    info = payload.get("info")
+    if not isinstance(info, dict) or info.get("name") != PYPI_PROJECT:
+        raise ReleaseValidationError("PyPI response does not identify the expected project")
+    releases = payload.get("releases")
+    if not isinstance(releases, dict) or not releases:
+        raise ReleaseValidationError("PyPI response does not contain a non-empty release mapping")
+    for release_version, artifacts in releases.items():
+        if (
+            not isinstance(release_version, str)
+            or RELEASE_TAG.fullmatch(f"v{release_version}") is None
+            or not isinstance(artifacts, list)
+        ):
+            raise ReleaseValidationError("PyPI response contains a malformed release entry")
+    if version in releases:
+        raise ReleaseValidationError(f"{PYPI_PROJECT} {version} already exists on PyPI")
+    print(f"confirmed {PYPI_PROJECT} {version} is absent from PyPI")
+
+
+def require_stable_github_release(tag: str) -> None:
+    """Fail closed unless GitHub exposes the exact stable release for ``tag``."""
+
+    if RELEASE_TAG.fullmatch(tag) is None:
+        raise ReleaseValidationError(f"GitHub release tag {tag!r} is malformed")
+    payload = _load_json_url(f"{GITHUB_RELEASE_URL}/{tag}", "the GitHub Release API")
+    if payload.get("tag_name") != tag:
+        raise ReleaseValidationError(f"GitHub Release does not identify exact tag {tag!r}")
+    if payload.get("draft") is not False:
+        raise ReleaseValidationError(f"GitHub Release for {tag!r} must not be a draft")
+    if payload.get("prerelease") is not False:
+        raise ReleaseValidationError(f"GitHub Release for {tag!r} must not be a prerelease")
+    print(f"confirmed stable GitHub Release exists for {tag}")
 
 
 def _normalized_distribution_name(name: str) -> str:
@@ -593,6 +656,16 @@ def _command_parser() -> argparse.ArgumentParser:
     )
     compare_parser.add_argument("--direct-dir", type=Path, required=True)
     compare_parser.add_argument("--rebuilt-dir", type=Path, required=True)
+
+    pypi_parser = subparsers.add_parser(
+        "check-pypi-absence", help="fail unless a release version is absent from PyPI"
+    )
+    pypi_parser.add_argument("--version", required=True)
+
+    github_parser = subparsers.add_parser(
+        "check-github-release", help="require an exact stable GitHub Release for a tag"
+    )
+    github_parser.add_argument("--tag", required=True)
     return parser
 
 
@@ -609,6 +682,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             inspect_distributions(args.dist_dir, args.project_root)
         elif args.command == "compare-wheels":
             compare_wheels(args.direct_dir, args.rebuilt_dir)
+        elif args.command == "check-pypi-absence":
+            require_pypi_version_absent(args.version)
+        elif args.command == "check-github-release":
+            require_stable_github_release(args.tag)
         else:  # pragma: no cover - argparse rejects unknown subcommands.
             parser.error(f"unknown command {args.command!r}")
     except ReleaseValidationError as error:
