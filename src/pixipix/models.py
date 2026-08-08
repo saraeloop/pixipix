@@ -155,6 +155,13 @@ class OutputMarker:
 
 
 @dataclass(frozen=True, slots=True)
+class RunOutputMarker:
+    schema_version: int
+    owner: Literal["pixipix"]
+    kind: Literal["run"]
+
+
+@dataclass(frozen=True, slots=True)
 class Dimensions:
     width: int
     height: int

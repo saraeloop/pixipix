@@ -1,1 +1,1 @@
-"""Shared downstream pipeline lifecycles."""
+"""Shared pipeline lifecycles and authoritative whole-pipeline execution."""

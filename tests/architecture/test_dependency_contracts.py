@@ -26,6 +26,7 @@ PIPELINE_MODULES = {
     "pixipix.pipeline.artifacts",
     "pixipix.pipeline.input",
     "pixipix.pipeline.publication",
+    "pixipix.pipeline.run",
 }
 PIPELINE_ALLOWED_PIXIPIX_DEPENDENCIES = {
     "pixipix.pipeline": set(),
@@ -45,6 +46,19 @@ PIPELINE_ALLOWED_PIXIPIX_DEPENDENCIES = {
         "pixipix.models",
         "pixipix.pipeline.artifacts",
         "pixipix.serialization",
+    },
+    "pixipix.pipeline.run": {
+        "pixipix.config",
+        "pixipix.errors",
+        "pixipix.models",
+        "pixipix.pipeline.artifacts",
+        "pixipix.pipeline.input",
+        "pixipix.pipeline.publication",
+        "pixipix.stages.align",
+        "pixipix.stages.extract",
+        "pixipix.stages.extract.metadata",
+        "pixipix.stages.pixelize",
+        "pixipix.stages.scale",
     },
 }
 STAGE_IMPLEMENTATIONS = {
@@ -576,6 +590,18 @@ PIPELINE_ALLOWED_INTERNAL_SYMBOLS = {
         "_is_schema_version_one",
         "_read_json_object",
         "_safe_frame_relative",
+    },
+    ("pixipix.pipeline.run", "pixipix.pipeline.artifacts"): {
+        "StageName",
+        "_read_json_object",
+    },
+    ("pixipix.pipeline.run", "pixipix.pipeline.input"): {
+        "ValidatedStageInput",
+        "validate_stage_input",
+    },
+    ("pixipix.pipeline.run", "pixipix.pipeline.publication"): {
+        "_valid_owned_output",
+        "publish_run_output",
     },
 }
 CHANNEL_ROUNDING_SYMBOL = "round_channel_half_away_from_zero"
@@ -1449,7 +1475,7 @@ def _pipeline_dependency_violations(
     return _governed_dependency_violations(PIPELINE_DEPENDENCY_CONTRACT, edges, modules)
 
 
-def test_only_cli_imports_stage_command_publishers() -> None:
+def test_only_cli_and_run_application_import_stage_command_publishers() -> None:
     modules = {_module(path) for path in _production_files()}
     facade_reexports = {
         (
@@ -1478,7 +1504,7 @@ def test_only_cli_imports_stage_command_publishers() -> None:
         for edge in _edges()
         if any(_stage_root(target) for target in _target_modules(edge, modules))
         and STAGE_PUBLISHERS.intersection(edge.names)
-        and edge.importer != "pixipix.cli"
+        and edge.importer not in {"pixipix.cli", "pixipix.pipeline.run"}
         and (edge.importer, edge.imported, edge.names) not in facade_reexports
     ]
     assert not violations, "\n".join(

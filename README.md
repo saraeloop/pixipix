@@ -124,7 +124,15 @@ Inspect the source without writing files:
 uv run pixipix inspect source.png --config pixipix.toml
 ```
 
-Extract the configured frames:
+Execute the complete current Core pipeline and publish one inspectable run:
+
+```bash
+uv run pixipix run source.png \
+  --config pixipix.toml \
+  --output build/run
+```
+
+The individual stage commands remain supported when a stage-by-stage workflow is useful:
 
 ```bash
 uv run pixipix extract source.png \
@@ -148,6 +156,19 @@ The accepted component count must match both `source.expected_components` and th
 number of configured frame names. PixiPix fails instead of guessing when they differ.
 
 ## Commands
+
+### `pixipix run`
+
+```text
+pixipix run INPUT --config CONFIG --output OUTPUT [--force]
+```
+
+Executes the authoritative current Core pipeline in the fixed order Extract → Scale →
+Pixelize → Align. The output root retains unchanged, inspectable `extract/`, `scale/`,
+`pixelize/`, and `align/` stage artifacts. PixiPix builds the complete run in a temporary
+sibling and publishes the requested root only after every stage succeeds. Stage warnings
+are printed once in their stored order, and failures retain the existing Core error and
+exit-code semantics.
 
 ### `pixipix inspect`
 
@@ -216,6 +237,9 @@ Successful write-stage warnings are printed to stderr while the existing success
 on stdout. By default, each command prints only warnings created by that stage; pass
 `--show-warnings` to include the complete inherited warning history in stored order.
 `stage.json` remains the structured source of truth for warning data.
+
+`pixipix run` prints the complete warning history produced by its four-stage operation
+once, in the final stored order. It does not reinterpret or duplicate stage warnings.
 
 Warnings do not turn a successful command into a failure: exit code `0` remains the
 authoritative success signal. Scripts that treat any stderr output as failure may need
@@ -517,6 +541,12 @@ PixiPix does not merge new files into stale output:
 - output is built in a temporary sibling directory
 - a previous owned output is restored if atomic publication fails where practical
 
+A whole-pipeline run adds only a narrow `.pixipix-run` ownership marker at its root and
+contains the four authoritative stage directories. Run replacement validates that marker,
+the complete stage set, every owned stage tree, and their configuration lineage. A failed
+stage never publishes a partial requested run root, and an existing valid run remains
+untouched.
+
 ## Determinism
 
 Within a supported, verified PixiPix execution environment, the same input, the same
@@ -561,7 +591,7 @@ Expected domain failures do not print tracebacks.
   inference
 - no palette processing, recoloring, atlas packing, manifest reporting, animation
   generation, or editor integration
-- no end-to-end `build` command
+- no caching, resume, concurrency, stage skipping, or configurable workflow graph
 
 ## Development
 

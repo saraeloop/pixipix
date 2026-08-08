@@ -12,6 +12,7 @@ from pixipix import __version__
 from pixipix.config import load_config
 from pixipix.errors import ExitCode, PixiPixError
 from pixipix.models import Component, InspectionResult, ProcessingWarning
+from pixipix.pipeline.run import run_pipeline
 from pixipix.stages.align import publish_align
 from pixipix.stages.extract import inspect_source, publish_extraction
 from pixipix.stages.pixelize import publish_pixelize
@@ -243,6 +244,22 @@ def align_command(
     _render_warnings(
         _select_warnings(result.warnings, command_stage="align", show_warnings=show_warnings)
     )
+
+
+@app.command("run")
+def run_command(
+    input_path: Annotated[Path, typer.Argument(exists=False, dir_okay=False, metavar="INPUT")],
+    config_path: Annotated[Path, typer.Option("--config", dir_okay=False, metavar="CONFIG")],
+    output: Annotated[Path, typer.Option("--output", file_okay=False, metavar="OUTPUT")],
+    force: Annotated[
+        bool, typer.Option("--force", help="Replace only verified PixiPix-owned run output.")
+    ] = False,
+) -> None:
+    """Execute Extract → Scale → Pixelize → Align as one atomic run."""
+
+    result = _call(lambda: run_pipeline(input_path, load_config(config_path), output, force=force))
+    typer.echo(f"completed run with {len(result.align.frames)} frame(s) at {output}")
+    _render_warnings(result.warnings)
 
 
 def main() -> None:

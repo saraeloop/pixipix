@@ -577,6 +577,16 @@ MATRIX = (
     ),
     _symbol(
         "pixipix.pipeline.publication",
+        "publish_run_output",
+        ("production",),
+        "internal",
+        signature=(
+            "(output: 'Path', build_run: 'RunBuilder[T]', "
+            "complete_run_validator: 'CompleteRunValidator', *, force: 'bool' = False) -> 'T'"
+        ),
+    ),
+    _symbol(
+        "pixipix.pipeline.publication",
         "_valid_owned_output",
         ("facade",),
         "private-but-consumed",
