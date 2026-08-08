@@ -13,9 +13,9 @@ from pathlib import Path, PurePosixPath
 
 from PIL import Image, UnidentifiedImageError
 
-from pixipix.errors import ProcessingError, UnsupportedInputError
+from pixipix.errors import PixiPixError, ProcessingError, UnsupportedInputError
 from pixipix.imageio import write_png
-from pixipix.models import OutputMarker, UInt8Image
+from pixipix.models import OutputMarker, RunOutputMarker, UInt8Image
 from pixipix.serialization import to_json_data, write_json
 
 from .artifacts import (
@@ -36,6 +36,8 @@ class OutputFrameImage:
 
 
 type OwnedMetadataValidator = Callable[[dict[str, object]], bool]
+type CompleteRunValidator = Callable[[Path], bool]
+type RunBuilder[T] = Callable[[Path], T]
 
 
 def _validate_output_location(output: Path) -> None:
@@ -174,6 +176,61 @@ def validate_stage_output_target(
     _prepare_target(output, force, stage, owned_metadata_validator)
 
 
+def _is_run_output_marker(value: dict[str, object]) -> bool:
+    return value == {"kind": "run", "owner": "pixipix", "schemaVersion": 1}
+
+
+def _valid_owned_run_output(path: Path, complete_run_validator: CompleteRunValidator) -> bool:
+    try:
+        marker = _read_json_object(path / ".pixipix-run", "PX_RUN")
+        if not _is_run_output_marker(marker):
+            return False
+        expected = {".pixipix-run", "extract", "scale", "pixelize", "align"}
+        if {item.name for item in path.iterdir()} != expected:
+            return False
+        if any(
+            (stage_root := path / stage).is_symlink() or not stage_root.is_dir()
+            for stage in ("extract", "scale", "pixelize", "align")
+        ):
+            return False
+        return complete_run_validator(path)
+    except (UnsupportedInputError, OSError):
+        return False
+
+
+def _prepare_run_target(
+    output: Path,
+    force: bool,
+    complete_run_validator: CompleteRunValidator,
+) -> None:
+    _validate_output_location(output)
+    if not output.exists():
+        return
+    if not output.is_dir():
+        raise ProcessingError(
+            "PX_OUTPUT_001",
+            "publish",
+            "output path exists and is not a directory",
+            path=output.name,
+        )
+    if next(output.iterdir(), None) is None:
+        return
+    if not force:
+        raise ProcessingError(
+            "PX_OUTPUT_002",
+            "publish",
+            "non-empty output directory is rejected without --force",
+            path=output.name,
+        )
+    if not _valid_owned_run_output(output, complete_run_validator):
+        raise ProcessingError(
+            "PX_OUTPUT_003",
+            "publish",
+            "--force may replace only a valid PixiPix-owned run output",
+            path=output.name,
+        )
+
+
 def _remove_tree(path: Path, parent: Path, prefix: str) -> bool:
     if (
         path.parent != parent
@@ -302,6 +359,68 @@ def publish_stage_output(
     except OSError as error:
         raise ProcessingError(
             "PX_OUTPUT_005", "publish", f"unable to write {stage} output", path=output.name
+        ) from error
+    finally:
+        if build_root is not None and build_root.exists():
+            _remove_tree(build_root, parent, build_prefix)
+        if backup_root is not None and backup_root.exists():
+            if previous is not None and previous.exists() and not output.exists():
+                with suppress(OSError):
+                    previous.replace(output)
+            if backup_root.exists() and output.exists():
+                _remove_tree(backup_root, parent, backup_prefix)
+
+
+def publish_run_output[T](
+    output: Path,
+    build_run: RunBuilder[T],
+    complete_run_validator: CompleteRunValidator,
+    *,
+    force: bool = False,
+) -> T:
+    """Build a complete run under one temporary sibling and publish it atomically."""
+
+    parent = output.parent
+    build_prefix = f".{output.name}.pixipix-run-build-"
+    backup_prefix = f".{output.name}.pixipix-run-backup-"
+    build_root: Path | None = None
+    backup_root: Path | None = None
+    previous: Path | None = None
+    try:
+        _prepare_run_target(output, force, complete_run_validator)
+        parent.mkdir(parents=True, exist_ok=True)
+        _prepare_run_target(output, force, complete_run_validator)
+        build_root = Path(tempfile.mkdtemp(prefix=build_prefix, dir=parent))
+        result = build_run(build_root)
+        write_json(build_root / ".pixipix-run", RunOutputMarker(1, "pixipix", "run"))
+        if not _valid_owned_run_output(build_root, complete_run_validator):
+            raise ProcessingError("PX_OUTPUT_006", "publish", "staged run output is invalid")
+        _prepare_run_target(output, force, complete_run_validator)
+        if output.exists():
+            backup_root = Path(tempfile.mkdtemp(prefix=backup_prefix, dir=parent))
+            previous = backup_root / "previous"
+            output.replace(previous)
+        try:
+            build_root.replace(output)
+        except OSError as error:
+            if previous is not None and previous.exists() and not output.exists():
+                with suppress(OSError):
+                    previous.replace(output)
+            raise ProcessingError(
+                "PX_OUTPUT_005",
+                "publish",
+                "atomic output publication failed",
+                path=output.name,
+                remediation="verify destination permissions and retry",
+            ) from error
+        if backup_root is not None and _remove_tree(backup_root, parent, backup_prefix):
+            backup_root = None
+        return result
+    except PixiPixError:
+        raise
+    except OSError as error:
+        raise ProcessingError(
+            "PX_OUTPUT_005", "publish", "unable to write run output", path=output.name
         ) from error
     finally:
         if build_root is not None and build_root.exists():

@@ -1665,6 +1665,7 @@ def test_wheel_contains_exact_shared_pipeline_members(
         / "pixipix"
         / "pipeline"
         / "publication.py",
+        "pixipix/pipeline/run.py": PROJECT_ROOT / "src" / "pixipix" / "pipeline" / "run.py",
         "pixipix/stages/io.py": PROJECT_ROOT / "src" / "pixipix" / "stages" / "io.py",
     }
 
@@ -1740,6 +1741,8 @@ def test_installed_artifact_runs_complete_pipeline(
     assert "installed CLI warning visibility validation passed" in result.stdout
     assert "installed resource default identity validation passed" in result.stdout
     assert "installed metadata-only resource refusal validation passed" in result.stdout
+    assert "distribution smoke completed operation run" in result.stdout
+    assert "installed RUN stage-tree parity validation passed" in result.stdout
     assert "distribution smoke test passed for pixipix" in result.stdout
 
 

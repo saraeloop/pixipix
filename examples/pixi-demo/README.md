@@ -180,6 +180,20 @@ uv run pixipix inspect \
   examples/pixi-demo/pixi-demo-sheet.png \
   --config examples/pixi-demo/pixipix.toml
 
+uv run pixipix run \
+  examples/pixi-demo/pixi-demo-sheet.png \
+  --config examples/pixi-demo/pixipix.toml \
+  --output build/pixi-demo/run
+```
+
+`pixipix run` is the simplest complete-demo path. It executes Extract → Scale →
+Pixelize → Align and publishes one run root containing inspectable `extract/`, `scale/`,
+`pixelize/`, and `align/` stage trees.
+
+The individual commands remain available for explicit stage-by-stage inspection and
+debugging:
+
+```bash
 uv run pixipix extract \
   examples/pixi-demo/pixi-demo-sheet.png \
   --config examples/pixi-demo/pixipix.toml \
@@ -208,17 +222,17 @@ Generated frames contain the Pixi artwork and remain subject to the
 
 ## What to look at afterward
 
-After the final command:
+After `pixipix run` completes:
 
-- Open `build/pixi-demo/aligned/frames/` and page through the thirty PNGs —
+- Open `build/pixi-demo/run/align/frames/` and page through the thirty PNGs —
   every frame is 64×64, every standing pose shares the same floor, and the
   four flying poses hover above it.
 - Compare `pixi-stand-cube.png` with its source region: the same pose and
   visual palette, converted into true logical pixels.
-- Open `build/pixi-demo/extracted/stage.json` and find the rejected component —
+- Open `build/pixi-demo/run/extract/stage.json` and find the rejected component —
   the crescent moon, listed with its area and rejection reason rather than
   silently discarded.
-- Open `build/pixi-demo/aligned/stage.json` for each frame's recorded
+- Open `build/pixi-demo/run/align/stage.json` for each frame's recorded
   placement: base position, offset, final position, and overflow (all zeros —
   nothing clipped).
 - Run the pipeline a second time into a different output directory and diff

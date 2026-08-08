@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import importlib.metadata
 import json
@@ -281,6 +282,49 @@ def _validate_final_output(output: Path) -> None:
     print("final aligned metadata and PNG validation passed")
 
 
+def _stage_tree_manifest(root: Path) -> tuple[tuple[str, int, str], ...]:
+    return tuple(
+        (
+            path.relative_to(root).as_posix(),
+            path.stat().st_size,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    )
+
+
+def _stage_tree_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    for relative, byte_length, sha256 in _stage_tree_manifest(root):
+        digest.update(f"{relative}\0{byte_length}\0{sha256}\n".encode())
+    return digest.hexdigest()
+
+
+def _validate_installed_run(run_root: Path, manual_outputs: Mapping[str, Path]) -> None:
+    marker = _load_json_object(run_root / ".pixipix-run", "run ownership marker")
+    if marker != {"kind": "run", "owner": "pixipix", "schemaVersion": 1}:
+        raise SmokeFailure("run ownership marker does not match the publication contract")
+    if {path.name for path in run_root.iterdir()} != {
+        ".pixipix-run",
+        "extract",
+        "scale",
+        "pixelize",
+        "align",
+    }:
+        raise SmokeFailure("run root does not contain exactly the authoritative stage set")
+    for stage in ("extract", "scale", "pixelize", "align"):
+        run_stage = run_root / stage
+        manual_stage = manual_outputs[stage]
+        _validate_stage_publication(stage, run_stage)
+        if _stage_tree_manifest(run_stage) != _stage_tree_manifest(manual_stage):
+            raise SmokeFailure(f"installed RUN {stage} tree differs from the manual sequence")
+        if _stage_tree_sha256(run_stage) != _stage_tree_sha256(manual_stage):
+            raise SmokeFailure(f"installed RUN {stage} tree hash differs from manual execution")
+    _validate_final_output(run_root / "align")
+    print("installed RUN stage-tree parity validation passed")
+
+
 def _validate_installed_warning_visibility(
     *, console: Path, image: Path, config: Path, working_directory: Path
 ) -> None:
@@ -485,11 +529,18 @@ def _run_installed_pipeline(
     if _inside(working_directory, repository):
         raise SmokeFailure("installed smoke working directory must be outside the repository")
     _prove_installed_module(environment, repository, console)
+    from pixipix.pipeline.run import run_pipeline
+
+    if run_pipeline.__module__ != "pixipix.pipeline.run":
+        raise SmokeFailure("installed Python RUN API does not resolve to its authoritative owner")
     expected_version = importlib.metadata.version("pixipix")
 
     help_result = _run_setup([console, "--help"], cwd=working_directory)
     if "Tiny poses in. Tidy pixels out." not in help_result.stdout:
         raise SmokeFailure("console help output is missing the PixiPix product statement")
+    run_help_result = _run_setup([console, "run", "--help"], cwd=working_directory)
+    if "Extract" not in run_help_result.stdout or "Align" not in run_help_result.stdout:
+        raise SmokeFailure("installed RUN help is missing the complete stage order")
     version_result = _run_setup([console, "version"], cwd=working_directory)
     if version_result.stdout.strip() != f"PixiPix {expected_version}":
         raise SmokeFailure("console version does not match installed distribution metadata")
@@ -533,6 +584,17 @@ def _run_installed_pipeline(
         else:
             _validate_stage_publication(stage, outputs[stage])
     _validate_final_output(outputs["align"])
+    run_root = working_directory / "installed-run"
+    run_result = _run_setup(
+        [console, "run", image, "--config", config, "--output", run_root],
+        cwd=working_directory,
+    )
+    if run_result.stdout != f"completed run with 2 frame(s) at {run_root}\n":
+        raise SmokeFailure("installed RUN success output does not match the CLI contract")
+    if run_result.stderr:
+        raise SmokeFailure("installed canonical RUN wrote unexpected warnings")
+    print("distribution smoke completed operation run")
+    _validate_installed_run(run_root, outputs)
     _validate_installed_warning_visibility(
         console=console,
         image=image,
