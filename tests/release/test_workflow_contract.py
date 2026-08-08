@@ -7,6 +7,8 @@ from scripts.smoke_distribution import SMOKE_STAGES
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "publish.yml"
 RELEASE_ARTIFACT = "python-package-distributions"
+RECOVERY_TAG = "v0.1.1"
+RECOVERY_COMMIT = "5c2e5b794860523d1fde21350ddd8da5f173f442"
 ACTION_REFERENCE = re.compile(
     r"(?m)^\s*uses:\s+(?P<action>[^@\s]+)@(?P<sha>[0-9a-f]{40})\s+#\s+(?P<version>v\S+)\s*$"
 )
@@ -33,19 +35,26 @@ def test_trusted_publisher_filename_and_environment_contract() -> None:
 
 def test_only_tag_gated_publish_job_receives_oidc_permission() -> None:
     text = _workflow_text()
+    resolve = _job(text, "resolve")
     build = _job(text, "build")
     canonical = _job(text, "canonical")
+    pypi_guard = _job(text, "pypi-guard")
     publish = _job(text, "publish")
 
+    assert "id-token: write" not in resolve
     assert "id-token: write" not in build
     assert "id-token: write" not in canonical
+    assert "id-token: write" not in pypi_guard
     assert text.count("id-token: write") == 1
     assert "id-token: write" in publish
     assert "github.event_name == 'push'" in publish
     assert "github.ref_type == 'tag'" in publish
     assert "startsWith(github.ref, 'refs/tags/v')" in publish
+    assert "github.event_name == 'workflow_dispatch'" in publish
+    assert "github.ref == 'refs/heads/main'" in publish
+    assert "needs.resolve.outputs.recovery == 'true'" in publish
     assert "needs: build" in canonical
-    assert "needs: canonical" in publish
+    assert "needs: [resolve, canonical, pypi-guard]" in publish
 
 
 def test_publish_job_only_downloads_and_publishes_verified_artifact() -> None:
@@ -94,19 +103,25 @@ def test_every_action_is_pinned_to_an_expected_immutable_release() -> None:
             "v1.14.0",
         ),
     }
-    assert len(ACTION_REFERENCE.findall(text)) == 9
+    assert len(ACTION_REFERENCE.findall(text)) == 11
 
 
-def test_pr_and_manual_runs_build_without_reaching_publish() -> None:
+def test_pr_and_recovery_runs_preserve_portable_verification() -> None:
     text = _workflow_text()
     build = _job(text, "build")
 
     assert re.search(r"(?m)^  pull_request:$", text)
-    assert re.search(r"(?m)^  workflow_dispatch:$", text)
+    assert re.search(r"(?m)^  workflow_dispatch:\n    inputs:\n      release_tag:$", text)
+    assert "description: Existing release tag to recover" in text
+    assert "required: true" in text
+    assert "type: string" in text
     assert "uv sync --locked --all-groups" in build
     assert "uv run ruff format --check ." in build
     assert "uv run ruff check ." in build
     assert "uv run mypy src tests" in build
+    assert "needs.resolve.outputs.recovery != 'true'" in build
+    assert "needs.resolve.outputs.recovery == 'true'" in build
+    assert "uv run mypy src\n" in build
     assert "uv run pytest" in build
     assert "fetch-depth: 0" in build
     assert (
@@ -143,6 +158,7 @@ def test_canonical_release_authority_runs_on_exact_runtime() -> None:
     assert 'python-version: "3.12.12"' in canonical
     assert "uv python install 3.12.12" in canonical
     assert '("3.12.12", "darwin", "arm64")' in canonical
+    assert "recovery verification tooling must come from the dispatched main commit" in canonical
     assert "test_current_behavior_matches_explicit_v0_1_1_authority" in canonical
     assert "test_active_release_gate_requires_the_canonical_runtime" in canonical
     for artifact_name in ("direct_wheel", "rebuilt_wheel"):
@@ -174,6 +190,83 @@ def test_canonical_verifies_the_exact_publish_candidate() -> None:
         assert f"name: {RELEASE_ARTIFACT}" in job
     assert publish.count("actions/download-artifact@") == 1
     assert "sha256sum" in publish
+
+
+def test_recovery_resolves_only_the_existing_immutable_release_tag() -> None:
+    text = _workflow_text()
+    resolve = _job(text, "resolve")
+
+    assert "RECOVERY_TAG: ${{ inputs.release_tag }}" in resolve
+    assert "release_ref=refs/tags/" not in resolve
+    assert 'release_ref="refs/tags/$release_tag"' in resolve
+    assert "git show-ref --verify --quiet" in resolve
+    assert 'git rev-parse "${release_ref}^{commit}"' in resolve
+    assert 'git cat-file -e "${release_commit}^{commit}"' in resolve
+    assert 'git show "${release_commit}:pyproject.toml"' in resolve
+    assert "scripts/release.py validate-tag" in resolve
+    assert 'if [[ "$GITHUB_REF" != "refs/heads/main" ]]' in resolve
+    assert re.search(
+        r'workflow_dispatch\).*?release_tag="\$RECOVERY_TAG"\s+resolve_tag "\$release_tag"',
+        resolve,
+        re.DOTALL,
+    )
+    assert f'"$release_tag" != "{RECOVERY_TAG}"' in resolve
+    assert f'"$release_commit" != "{RECOVERY_COMMIT}"' in resolve
+    assert 'scripts/release.py check-github-release --tag "$release_tag"' in resolve
+    assert "release_ref=$release_ref" in resolve
+    assert "release_commit=$release_commit" in resolve
+    assert "git tag" not in text
+    assert "git push" not in text
+    assert "git update-ref" not in text
+
+
+def test_build_checks_out_and_proves_the_resolved_release_commit() -> None:
+    text = _workflow_text()
+    build = _job(text, "build")
+
+    assert "needs: resolve" in build
+    assert "ref: ${{ needs.resolve.outputs.release_commit }}" in build
+    assert "fetch-depth: 0" in build
+    assert 'head_commit="$(git rev-parse HEAD)"' in build
+    assert 'tag_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"' in build
+    assert 'if [[ "$head_commit" != "$RELEASE_COMMIT" ]]' in build
+    assert 'if [[ "$head_commit" != "$tag_commit" ]]' in build
+    assert "uv build --wheel --no-sources --out-dir dist" in build
+    assert "uv build --sdist --no-sources --out-dir dist" in build
+    assert "sha256sum dist/*.whl dist/*.tar.gz" in build
+
+
+def test_pypi_absence_guard_is_structural_and_fail_closed() -> None:
+    text = _workflow_text()
+    guard = _job(text, "pypi-guard")
+    publish = _job(text, "publish")
+
+    assert "needs: [resolve, canonical]" in guard
+    assert "github.event_name == 'push'" in guard
+    assert "github.event_name == 'workflow_dispatch'" in guard
+    assert "needs.resolve.outputs.recovery == 'true'" in guard
+    assert "RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}" in guard
+    assert 'scripts/release.py check-pypi-absence --version "$RELEASE_VERSION"' in guard
+    assert "needs: [resolve, canonical, pypi-guard]" in publish
+    assert "skip-existing: false" in publish
+
+
+def test_recovery_and_normal_tag_push_share_one_verified_candidate() -> None:
+    text = _workflow_text()
+    resolve = _job(text, "resolve")
+    build = _job(text, "build")
+    canonical = _job(text, "canonical")
+    publish = _job(text, "publish")
+
+    assert 'if [[ "$GITHUB_REF_TYPE" != "tag" ]]' in resolve
+    assert 'release_tag="$GITHUB_REF_NAME"' in resolve
+    assert build.count("actions/upload-artifact@") == 1
+    assert canonical.count("actions/download-artifact@") == 1
+    assert publish.count("actions/download-artifact@") == 1
+    for job in (build, canonical, publish):
+        assert f"name: {RELEASE_ARTIFACT}" in job
+    assert "uv build" not in canonical
+    assert "uv build" not in publish
 
 
 def test_distribution_smoke_uses_complete_structured_stage_contract() -> None:
