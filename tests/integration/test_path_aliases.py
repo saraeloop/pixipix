@@ -29,9 +29,13 @@ type AliasName = Literal["var", "tmp"]
 type AliasBoundary = Literal["direct", "cli"]
 
 
+def _is_darwin_runtime() -> bool:
+    return sys.platform == "darwin"
+
+
 @contextmanager
 def _real_alias_root(alias_name: AliasName) -> Iterator[tuple[Path, Path, Path]]:
-    if sys.platform != "darwin":
+    if not _is_darwin_runtime():
         pytest.skip("real macOS alias boundary requires Darwin")
     alias = Path(f"/{alias_name}")
     canonical_alias = Path(f"/private/{alias_name}")
