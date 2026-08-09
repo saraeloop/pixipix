@@ -41,15 +41,28 @@ explicit expected-versus-actual reason; it never weakens or regenerates the
 oracle. On the canonical runtime, dependency-version drift remains a failure.
 
 Stable releases add explicit authorities without replacing history. `v0.1.0.json`
-points to the immutable post-M3 baseline, while the active `v0.1.1.json` authority
-points to the immutable `v0.1.0.json` authority and its exact SHA-256. Both use the
-same behavioral, artifact-identity, release-identity, and repository/toolchain
-classification. The v0.1.1 transition structurally parses each `stage.json`, changes
+points to the immutable post-M3 baseline, `v0.1.1.json` points to the immutable
+`v0.1.0.json` authority, and the active `v0.2.0.json` authority points to the
+immutable `v0.1.1.json` authority and its exact SHA-256. All use the same behavioral,
+artifact-identity, release-identity, and repository/toolchain classification. The
+v0.1.1 transition structurally parses each `stage.json`, changes
 only exact `pixipixVersion` fields from `0.1.1` to `0.1.0`, reserializes with the
 canonical stage metadata grammar, and requires the v0.1.0 metadata and stage-tree
 hashes exactly. Arbitrary byte replacement, regex normalization, and normalization of
 unrelated version-looking values are prohibited. PNG bytes and behavioral leaves must
 already match without normalization.
+
+The v0.2.0 authority preserves those historical cases with only their exact release
+identity transition and adds bounded RUN evidence: real CLI RUN trees for both
+canonical lineages, per-stage hashes that must equal their manual stage trees, warning
+lineage, the deterministic whole-run ownership marker, and a structural Python API
+case confirming the explicit `pixipix.pipeline.run` owner without facade expansion.
+The focused generator is single-purpose, refuses overwrite, and has no bless/update
+mode:
+
+```bash
+uv run python -B -m tests.parity.generate_release_authority
+```
 
 Release gates run a non-skipping canonical-runtime precheck before the active
 authority comparison. Ordinary noncanonical test runs may retain the diagnostic skip,

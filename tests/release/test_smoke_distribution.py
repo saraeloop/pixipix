@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,19 +40,25 @@ from tests.architecture.test_import_compatibility import (
     installed_compatibility_manifest_program,
 )
 from tests.parity.support import (
-    PROJECT_ROOT as PARITY_PROJECT_ROOT,
-)
-from tests.parity.support import (
+    ACTIVE_RELEASE_AUTHORITY,
+    RELEASE_AUTHORITIES,
+    RUN_CASE_IDS,
+    ReleaseAuthority,
     capture_behavior,
     capture_environment,
     compare_behavior,
     load_release_baseline,
     require_canonical_runtime,
 )
+from tests.parity.support import (
+    PROJECT_ROOT as PARITY_PROJECT_ROOT,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_SCRIPT = PROJECT_ROOT / "scripts" / "smoke_distribution.py"
 EXTERNAL_RELEASE_CANDIDATE_ENV = "PIXIPIX_RELEASE_CANDIDATE_DIR"
+RELEASE_AUTHORITY_VERSION_ENV = "PIXIPIX_RELEASE_AUTHORITY_VERSION"
+RELEASE_SOURCE_COMMIT_ENV = "PIXIPIX_RELEASE_SOURCE_COMMIT"
 DET_CONTRACT_SNIPPETS = (
     "Within a supported, verified PixiPix execution environment",
     (
@@ -150,6 +157,35 @@ def _external_release_candidate() -> tuple[Path, Path] | None:
     return wheels[0], sdists[0]
 
 
+def _selected_release_authority() -> ReleaseAuthority:
+    selected_version = os.environ.get(RELEASE_AUTHORITY_VERSION_ENV)
+    if not selected_version:
+        return ACTIVE_RELEASE_AUTHORITY
+    matches = tuple(
+        authority for authority in RELEASE_AUTHORITIES if authority.version == selected_version
+    )
+    assert len(matches) == 1, f"unsupported release authority version: {selected_version}"
+    return matches[0]
+
+
+def _release_source_lock_sha256(expected: object) -> str | None:
+    source_commit = os.environ.get(RELEASE_SOURCE_COMMIT_ENV)
+    if source_commit is None:
+        return None
+    assert re.fullmatch(r"[0-9a-f]{40}", source_commit), (
+        f"{RELEASE_SOURCE_COMMIT_ENV} must be a full lowercase commit SHA"
+    )
+    result = _run(
+        ["git", "show", f"{source_commit}:uv.lock"],
+        cwd=PROJECT_ROOT,
+    )
+    assert result.returncode == 0, "release source commit must contain uv.lock"
+    actual = hashlib.sha256(result.stdout.encode()).hexdigest()
+    assert isinstance(expected, str)
+    assert actual == expected, "release source lock does not match the selected authority"
+    return actual
+
+
 @pytest.fixture(scope="session")
 def built_artifacts(tmp_path_factory: pytest.TempPathFactory) -> BuiltArtifacts:
     root = tmp_path_factory.mktemp("distribution-smoke-artifacts")
@@ -202,6 +238,59 @@ def test_external_release_candidate_mode_is_strict(
     extra.write_text("unexpected", encoding="utf-8")
     with pytest.raises(AssertionError, match="exactly two artifacts"):
         _external_release_candidate()
+
+
+def test_release_authority_selection_defaults_to_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(RELEASE_AUTHORITY_VERSION_ENV, raising=False)
+
+    assert _selected_release_authority() is ACTIVE_RELEASE_AUTHORITY
+
+
+def test_release_authority_selection_supports_explicit_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    historical = next(
+        authority for authority in RELEASE_AUTHORITIES if authority.version == "0.1.1"
+    )
+    monkeypatch.setenv(RELEASE_AUTHORITY_VERSION_ENV, historical.version)
+
+    assert _selected_release_authority() is historical
+
+
+def test_release_authority_selection_rejects_unknown_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(RELEASE_AUTHORITY_VERSION_ENV, "9.9.9")
+
+    with pytest.raises(AssertionError, match="unsupported release authority version"):
+        _selected_release_authority()
+
+
+def test_release_source_lock_identity_uses_exact_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = next(authority for authority in RELEASE_AUTHORITIES if authority.version == "0.1.1")
+    expected = load_release_baseline(authority=authority)["uvLockSha256"]
+    monkeypatch.setenv(
+        RELEASE_SOURCE_COMMIT_ENV,
+        "5c2e5b794860523d1fde21350ddd8da5f173f442",
+    )
+
+    assert _release_source_lock_sha256(expected) == expected
+
+
+def test_release_source_lock_identity_rejects_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        RELEASE_SOURCE_COMMIT_ENV,
+        "5c2e5b794860523d1fde21350ddd8da5f173f442",
+    )
+
+    with pytest.raises(AssertionError, match="does not match"):
+        _release_source_lock_sha256("0" * 64)
 
 
 @pytest.mark.parametrize("case", ["empty", "relative", "missing"])
@@ -1765,7 +1854,16 @@ def test_installed_artifact_matches_active_release_authority(
             assert wheel == built_artifacts.rebuilt_wheel
             assert wheel != direct_wheel
     installed = _locked_installed_release_environment(wheel, tmp_path / artifact_name)
-    expected = load_release_baseline()
+    authority = _selected_release_authority()
+    expected = load_release_baseline(authority=authority)
+    raw_cases = expected["cases"]
+    assert isinstance(raw_cases, list)
+    expected_case_ids = {case.get("caseId") for case in raw_cases if isinstance(case, dict)}
+    source_lock_sha256 = _release_source_lock_sha256(expected["uvLockSha256"])
+    if external is not None:
+        assert source_lock_sha256 is not None, (
+            f"{RELEASE_SOURCE_COMMIT_ENV} is required for an external release candidate"
+        )
     actual_environment = capture_environment(
         PARITY_PROJECT_ROOT,
         python=installed.interpreter,
@@ -1778,7 +1876,10 @@ def test_installed_artifact_matches_active_release_authority(
         tmp_path / artifact_name / "capture",
         python=installed.interpreter,
         import_root=installed.environment,
+        include_run=all(case_id in expected_case_ids for case_id in RUN_CASE_IDS),
     )
+    if source_lock_sha256 is not None:
+        actual["uvLockSha256"] = source_lock_sha256
 
     compare_behavior(expected, actual)
 

@@ -53,7 +53,7 @@ def test_only_tag_gated_publish_job_receives_oidc_permission() -> None:
     assert "github.event_name == 'workflow_dispatch'" in publish
     assert "github.ref == 'refs/heads/main'" in publish
     assert "needs.resolve.outputs.recovery == 'true'" in publish
-    assert "needs: build" in canonical
+    assert "needs: [resolve, build]" in canonical
     assert "needs: [resolve, canonical, pypi-guard]" in publish
 
 
@@ -126,7 +126,7 @@ def test_pr_and_recovery_runs_preserve_portable_verification() -> None:
     assert "fetch-depth: 0" in build
     assert (
         "--deselect=tests/parity/test_parity.py::"
-        "test_current_behavior_matches_explicit_v0_1_1_authority" in build
+        "test_current_behavior_matches_explicit_v0_2_0_authority" in build
     )
     assert (
         "--deselect=tests/parity/test_parity.py::"
@@ -159,7 +159,7 @@ def test_canonical_release_authority_runs_on_exact_runtime() -> None:
     assert "uv python install 3.12.12" in canonical
     assert '("3.12.12", "darwin", "arm64")' in canonical
     assert "recovery verification tooling must come from the dispatched main commit" in canonical
-    assert "test_current_behavior_matches_explicit_v0_1_1_authority" in canonical
+    assert "test_current_behavior_matches_explicit_v0_2_0_authority" in canonical
     assert "test_active_release_gate_requires_the_canonical_runtime" in canonical
     for artifact_name in ("direct_wheel", "rebuilt_wheel"):
         node = (
@@ -180,6 +180,12 @@ def test_canonical_verifies_the_exact_publish_candidate() -> None:
     assert f"name: {RELEASE_ARTIFACT}" in canonical
     assert "path: ${{ runner.temp }}/release-candidate" in canonical
     assert "PIXIPIX_RELEASE_CANDIDATE_DIR: ${{ runner.temp }}/release-candidate" in canonical
+    assert (
+        "PIXIPIX_RELEASE_AUTHORITY_VERSION: ${{ needs.resolve.outputs.release_version }}"
+        in canonical
+    )
+    assert "PIXIPIX_RELEASE_SOURCE_COMMIT: ${{ needs.resolve.outputs.release_commit }}" in canonical
+    assert "fetch-depth: 0" in canonical
     assert "uv build --wheel" not in canonical
     assert "uv build --sdist" not in canonical
     assert 'wheels=("$RUNNER_TEMP"/release-candidate/*.whl)' in canonical
