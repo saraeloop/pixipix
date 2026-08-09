@@ -1,6 +1,6 @@
 [project]
 name = "pixipix"
-version = "0.1.1"
+version = "0.2.0"
 description = "Deterministic sprite sheet pipeline: extract, scale, pixelize, and align raster art into production-ready RGBA frames."
 readme = "README.md"
 license = { file = "LICENSE" }

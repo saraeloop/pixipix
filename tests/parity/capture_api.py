@@ -74,6 +74,40 @@ def _resource_error_case() -> dict[str, object]:
     raise AssertionError("resource policy unexpectedly admitted")
 
 
+def _run_case(loaded_config: Path) -> dict[str, object]:
+    import pixipix
+    import pixipix.pipeline as pipeline_package
+    from pixipix.pipeline.run import PipelineRunResult, run_pipeline
+
+    output = Path("api/robot/run")
+    result = run_pipeline(
+        Path("inputs/robot-geometric.png"),
+        load_config(loaded_config),
+        output,
+    )
+    assert isinstance(result, PipelineRunResult)
+    stage_order = [
+        cast(
+            dict[str, object],
+            json.loads((output / stage / "stage.json").read_bytes()),
+        )["stage"]
+        for stage in ("extract", "scale", "pixelize", "align")
+    ]
+    return {
+        "caseId": "robot.api.run",
+        "kind": "structural-api-parity",
+        "stage": "run",
+        "returnType": type(result).__name__,
+        "runPipelineOwner": run_pipeline.__module__,
+        "resultTypeOwner": PipelineRunResult.__module__,
+        "stageOrder": stage_order,
+        "warnings": to_json_data(result.warnings),
+        "outputExists": output.is_dir(),
+        "packageRootExport": hasattr(pixipix, "run_pipeline"),
+        "pipelineRootExport": hasattr(pipeline_package, "run_pipeline"),
+    }
+
+
 def main() -> None:
     root = Path(sys.argv[1])
     image = Path("inputs/robot-geometric.png")
@@ -97,6 +131,8 @@ def main() -> None:
         _error_case(root, config),
         _resource_error_case(),
     ]
+    if len(sys.argv) == 3 and sys.argv[2] == "--include-run":
+        cases.append(_run_case(config))
     print(json.dumps(cases, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
 
 

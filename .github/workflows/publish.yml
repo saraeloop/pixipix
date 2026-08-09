@@ -185,7 +185,7 @@ jobs:
       - name: Test portable suite
         run: >-
           uv run pytest
-          --deselect=tests/parity/test_parity.py::test_current_behavior_matches_explicit_v0_1_1_authority
+          --deselect=tests/parity/test_parity.py::test_current_behavior_matches_explicit_v0_2_0_authority
           --deselect=tests/parity/test_parity.py::test_active_release_gate_requires_the_canonical_runtime
           --deselect='tests/release/test_smoke_distribution.py::test_installed_artifact_matches_active_release_authority[direct_wheel]'
           --deselect='tests/release/test_smoke_distribution.py::test_installed_artifact_matches_active_release_authority[rebuilt_wheel]'
@@ -244,7 +244,7 @@ jobs:
 
   canonical:
     name: Verify canonical parity authority
-    needs: build
+    needs: [resolve, build]
     runs-on: macos-15
     permissions:
       contents: read
@@ -252,6 +252,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify recovery uses current main verification tooling
@@ -306,9 +307,11 @@ jobs:
       - name: Test canonical release authority
         env:
           PIXIPIX_RELEASE_CANDIDATE_DIR: ${{ runner.temp }}/release-candidate
+          PIXIPIX_RELEASE_AUTHORITY_VERSION: ${{ needs.resolve.outputs.release_version }}
+          PIXIPIX_RELEASE_SOURCE_COMMIT: ${{ needs.resolve.outputs.release_commit }}
         run: >-
           uv run pytest -q
-          tests/parity/test_parity.py::test_current_behavior_matches_explicit_v0_1_1_authority
+          tests/parity/test_parity.py::test_current_behavior_matches_explicit_v0_2_0_authority
           tests/parity/test_parity.py::test_active_release_gate_requires_the_canonical_runtime
           'tests/release/test_smoke_distribution.py::test_installed_artifact_matches_active_release_authority[direct_wheel]'
           'tests/release/test_smoke_distribution.py::test_installed_artifact_matches_active_release_authority[rebuilt_wheel]'

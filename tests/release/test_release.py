@@ -422,7 +422,7 @@ def test_current_project_metadata_authority_is_exact() -> None:
     metadata = load_project_metadata(PROJECT_ROOT / "pyproject.toml")
 
     assert metadata.name == "pixipix"
-    assert metadata.version == "0.1.1"
+    assert metadata.version == "0.2.0"
     assert metadata.description == (
         "Deterministic sprite sheet pipeline: extract, scale, pixelize, and align "
         "raster art into production-ready RGBA frames."

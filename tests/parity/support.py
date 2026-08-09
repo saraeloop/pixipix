@@ -20,6 +20,7 @@ API_PROBE_PATH = Path(__file__).with_name("capture_api.py")
 RELEASE_AUTHORITY_KIND = "stable-release-parity"
 HISTORICAL_BASELINE_SHA256 = "b8824ef1e0403ff52ab3db5ead6213731613c7ffd8ad80e686cc8939d6f791c7"
 V0_1_0_AUTHORITY_SHA256 = "55ee829ee982c487abd24cfe3920c7601017c81f0ed0994e0414aefadbf0d261"
+V0_1_1_AUTHORITY_SHA256 = "5b19c8a6d81415a86d100132675549c403eef6acbd29e7101d28a76d5b538f27"
 RELEASE_FIELD_CLASSIFICATION = {
     "artifactIdentity": [
         "cases[].artifacts[].path",
@@ -45,11 +46,23 @@ RELEASE_FIELD_CLASSIFICATION = {
         "uvLockSha256",
     ],
 }
+V0_2_0_RELEASE_FIELD_CLASSIFICATION = {
+    **RELEASE_FIELD_CLASSIFICATION,
+    "artifactIdentity": [
+        *RELEASE_FIELD_CLASSIFICATION["artifactIdentity"],
+        "cases[].runStageTreeSha256.*",
+    ],
+    "behavioral": [
+        "cases[].* excluding artifacts, stageTreeSha256, runStageTreeSha256, and **.pixipixVersion",
+    ],
+}
 CANONICAL_RUNTIME_FIELDS = (
     "implementation",
     "pythonVersion",
     "platformIdentifier",
 )
+RUN_STAGES = ("extract", "scale", "pixelize", "align")
+RUN_CASE_IDS = ("pixi.cli.run", "robot.cli.run", "robot.api.run")
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,8 +88,15 @@ V0_1_1_AUTHORITY = ReleaseAuthority(
     historical_path=V0_1_0_AUTHORITY.path,
     historical_sha256=V0_1_0_AUTHORITY_SHA256,
 )
-RELEASE_AUTHORITIES = (V0_1_0_AUTHORITY, V0_1_1_AUTHORITY)
-ACTIVE_RELEASE_AUTHORITY = V0_1_1_AUTHORITY
+V0_2_0_AUTHORITY = ReleaseAuthority(
+    version="0.2.0",
+    path=Path(__file__).with_name("baseline") / "v0.2.0.json",
+    preparation_commit="d06671a015e9987ae7be402833bb567d0cdd68dd",
+    historical_path=V0_1_1_AUTHORITY.path,
+    historical_sha256=V0_1_1_AUTHORITY_SHA256,
+)
+RELEASE_AUTHORITIES = (V0_1_0_AUTHORITY, V0_1_1_AUTHORITY, V0_2_0_AUTHORITY)
+ACTIVE_RELEASE_AUTHORITY = V0_2_0_AUTHORITY
 
 # Compatibility names for callers that consume the active stable-release authority.
 RELEASE_BASELINE_PATH = ACTIVE_RELEASE_AUTHORITY.path
@@ -400,6 +420,39 @@ def _run_lineage(
     return cases
 
 
+def _run_whole_pipeline_case(
+    lineage: Lineage,
+    *,
+    python: Path,
+    source_root: Path,
+    production_source_root: Path | None,
+    execution_root: Path,
+) -> dict[str, object]:
+    image = f"inputs/{Path(lineage.image).name}"
+    config = f"inputs/{Path(lineage.config).name}"
+    output = Path("cli") / lineage.identifier / "run"
+    case = _run_cli_case(
+        case_id=f"{lineage.identifier}.cli.run",
+        arguments=[
+            "run",
+            image,
+            "--config",
+            config,
+            "--output",
+            output.as_posix(),
+        ],
+        python=python,
+        source_root=source_root,
+        production_source_root=production_source_root,
+        execution_root=execution_root,
+        output_root=output,
+    )
+    case["runStageTreeSha256"] = {
+        stage: _artifact_records(execution_root / output / stage)[1] for stage in RUN_STAGES
+    }
+    return case
+
+
 def _run_api_probe(
     *,
     python: Path,
@@ -407,9 +460,13 @@ def _run_api_probe(
     production_source_root: Path | None,
     execution_root: Path,
     api_probe_path: Path,
+    include_run: bool,
 ) -> list[dict[str, object]]:
+    arguments: list[str | Path] = [python, "-B", api_probe_path, execution_root]
+    if include_run:
+        arguments.append("--include-run")
     result = subprocess.run(
-        [python, "-B", api_probe_path, execution_root],
+        arguments,
         cwd=execution_root,
         env=_runtime_environment(production_source_root),
         capture_output=True,
@@ -443,6 +500,7 @@ def capture_behavior(
     python: Path | None = None,
     import_root: Path | None = None,
     api_probe_path: Path = API_PROBE_PATH,
+    include_run: bool = True,
 ) -> dict[str, object]:
     if execution_root.exists() and any(execution_root.iterdir()):
         raise ParityError("parity execution root must be empty")
@@ -466,15 +524,26 @@ def capture_behavior(
                 execution_root=execution_root,
             )
         )
-    cases.extend(
-        _run_api_probe(
-            python=interpreter,
-            source_root=source_root,
-            production_source_root=production_source_root,
-            execution_root=execution_root,
-            api_probe_path=api_probe_path,
-        )
+    if include_run:
+        for lineage in LINEAGES:
+            cases.append(
+                _run_whole_pipeline_case(
+                    lineage,
+                    python=interpreter,
+                    source_root=source_root,
+                    production_source_root=production_source_root,
+                    execution_root=execution_root,
+                )
+            )
+    api_cases = _run_api_probe(
+        python=interpreter,
+        source_root=source_root,
+        production_source_root=production_source_root,
+        execution_root=execution_root,
+        api_probe_path=api_probe_path,
+        include_run=include_run,
     )
+    cases.extend(api_cases)
     return {
         "environment": environment,
         "uvLockSha256": sha256_bytes((source_root / "uv.lock").read_bytes()),
@@ -505,7 +574,7 @@ def release_authority_manifest(
             "path": authority.historical_path.name,
             "sha256": authority.historical_sha256,
         },
-        "fieldClassification": RELEASE_FIELD_CLASSIFICATION,
+        "fieldClassification": _release_field_classification(authority),
         **behavior,
     }
 
@@ -566,7 +635,7 @@ def load_release_baseline(
         "sha256": authority.historical_sha256,
     }:
         raise ParityError(f"v{version} parity authority records the wrong historical provenance")
-    if manifest.get("fieldClassification") != RELEASE_FIELD_CLASSIFICATION:
+    if manifest.get("fieldClassification") != _release_field_classification(authority):
         raise ParityError(f"v{version} parity authority field classification is incomplete")
     if not isinstance(manifest.get("environment"), dict):
         raise ParityError(f"v{version} parity authority environment is missing or invalid")
@@ -574,8 +643,19 @@ def load_release_baseline(
         raise ParityError(f"v{version} parity authority fixture identity is missing or invalid")
     if not isinstance(manifest.get("uvLockSha256"), str):
         raise ParityError(f"v{version} parity authority lock identity is missing or invalid")
-    _case_map(manifest)
+    cases = _case_map(manifest)
+    if (
+        authority is V0_2_0_AUTHORITY
+        and tuple(case_id for case_id in cases if case_id in RUN_CASE_IDS) != RUN_CASE_IDS
+    ):
+        raise ParityError("v0.2.0 parity authority RUN evidence is incomplete")
     return manifest
+
+
+def _release_field_classification(authority: ReleaseAuthority) -> dict[str, list[str]]:
+    if authority is V0_2_0_AUTHORITY:
+        return V0_2_0_RELEASE_FIELD_CLASSIFICATION
+    return RELEASE_FIELD_CLASSIFICATION
 
 
 def compare_behavior(expected: dict[str, object], actual: dict[str, object]) -> None:

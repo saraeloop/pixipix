@@ -58,7 +58,7 @@ To build an installable wheel:
 
 ```bash
 uv build
-uv tool install dist/pixipix-0.1.1-py3-none-any.whl
+uv tool install dist/pixipix-0.2.0-py3-none-any.whl
 pixipix --help
 ```
 
